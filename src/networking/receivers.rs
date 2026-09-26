@@ -57,12 +57,12 @@ pub async fn packet_receiver(
         if bytes[1] & 0x7F >= 72 {
             for path in &connection.paths() {
                 if let Some(rtt) = connection.rtt(path.id()) {
-                    // println!("{} RTT: {}", connection.remote_id(), rtt.as_micros());
                     println!(
-                        "path: {} \t is relay: {} \t is selected {} \t rtt: {}",
+                        "path: {} \t is relay: {} \t is selected: {} \t remote: {} \t rtt: {:?}",
                         path.id(),
-                        path.is_selected(),
                         path.is_relay(),
+                        path.is_selected(),
+                        path.remote_addr(),
                         rtt.as_micros()
                     );
                 }

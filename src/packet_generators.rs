@@ -45,7 +45,7 @@ async fn generate_video_frame(tx: Sender<PacketData>, clock: Instant) -> anyhow:
 
 async fn generate_audio_sample(tx: Sender<PacketData>, clock: Instant) -> anyhow::Result<()> {
     loop {
-        let mut file = File::open("input.opus").await?;
+        let mut file = File::open("input.ogg").await?;
         let mut opus_data = Vec::new();
         file.read_to_end(&mut opus_data).await?;
 
@@ -55,7 +55,7 @@ async fn generate_audio_sample(tx: Sender<PacketData>, clock: Instant) -> anyhow
             let elapsed = (clock.elapsed().as_secs() * 48_000) as u32;
 
             let packet_data = PacketData {
-                packet_type: PacketType::Video,
+                packet_type: PacketType::Audio,
                 data: Bytes::copy_from_slice(&packet),
                 timestamp: elapsed,
             };
