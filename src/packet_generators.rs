@@ -26,7 +26,7 @@ async fn generate_video_frame(tx: Sender<PacketData>, clock: Instant) -> anyhow:
                 break;
             }
 
-            let elapsed = (clock.elapsed().as_secs() * 90_000) as u32;
+            let elapsed = ((clock.elapsed().as_nanos() * 90_000) / 1_000_000_000) as u32;
 
             let packet_data = PacketData {
                 packet_type: PacketType::Video,
@@ -52,7 +52,7 @@ async fn generate_audio_sample(tx: Sender<PacketData>, clock: Instant) -> anyhow
         let packets = parse_ogg_opus_packets(&opus_data)?;
 
         for packet in packets {
-            let elapsed = (clock.elapsed().as_secs() * 48_000) as u32;
+            let elapsed = ((clock.elapsed().as_nanos() * 48_000) / 1_000_000_000) as u32;
 
             let packet_data = PacketData {
                 packet_type: PacketType::Audio,

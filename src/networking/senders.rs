@@ -13,7 +13,7 @@ use crate::networking::{
     PacketData,
     PacketType::{Audio, Video},
     Peer,
-    rtcp::{PacketType, RTCPHeader, SenderReport},
+    rtcp::{PacketType, RTCPHeader, SenderReport, system_time_to_ntp},
     rtp::RTPSession,
 };
 
@@ -151,23 +151,22 @@ pub async fn send_rtcp(
 
         sleep(Duration::from_secs_f64(interval)).await;
 
-        let now = SystemTime::now();
-        let time_since_epoch = now.duration_since(SystemTime::UNIX_EPOCH).unwrap();
+        let ntp = system_time_to_ntp(SystemTime::now());
+        let elapsed = rtp_session.clock.elapsed();
+        let rtp_time =
+            ((elapsed.as_nanos() * rtp_session.clock_rate as u128) / 1_000_000_000) as u32;
 
-        let seconds = time_since_epoch.as_secs() + 2_208_988_800;
-        let fraction =
-            ((time_since_epoch.subsec_micros() + 1) as f64 * (1u64 << 32) as f64 * 1.0e-6) as u32;
-        let ntp = seconds << 32 | (fraction as u64);
+        let reports = peer
+            .lock()
+            .map_or_else(|_| vec![], |mut p| vec![p.reception_report()]);
 
         let sender_report = SenderReport {
             ssrc: rtp_session.ssrc,
             ntp_time: ntp,
-            rtp_time: (rtp_session.clock.elapsed().as_secs() * rtp_session.clock_rate) as u32,
+            rtp_time,
             packet_count: rtp_session.get_num_packets_generated(),
             octet_count: rtp_session.get_num_octets_sent(),
-            reports: peer
-                .lock()
-                .map_or_else(|_| vec![], |p| vec![p.reception_report()]),
+            reports,
         };
 
         let header = RTCPHeader {
@@ -177,9 +176,10 @@ pub async fn send_rtcp(
             length: sender_report.length(),
         };
 
-        let mut packet = BytesMut::with_capacity(4 + sender_report.length() as usize);
+        let body = sender_report.serialize();
+        let mut packet = BytesMut::with_capacity(4 + body.len());
         packet.put(header.serialize());
-        packet.put(sender_report.serialize());
+        packet.put(body);
 
         let packet = packet.freeze();
 

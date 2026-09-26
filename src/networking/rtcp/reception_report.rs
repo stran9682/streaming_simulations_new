@@ -7,7 +7,7 @@ use bytes::{Buf, BufMut, BytesMut};
 pub struct ReceptionReport {
     pub reportee_ssrc: u32,
     pub fraction_lost: u8,
-    pub total_lost: u32,
+    pub total_lost: i32,
     pub extended_sequence_number: u32,
     pub jitter: u32,
     pub last_sr_timestamp: u32,
@@ -59,7 +59,11 @@ impl ReceptionReport {
         let t0 = packet.get_u8();
         let t1 = packet.get_u8();
         let t2 = packet.get_u8();
-        let total_lost = (t2 as u32) | (t1 as u32) << 8 | (t0 as u32) << 16;
+
+        let mut total_lost = ((t0 as i32) << 16) | ((t1 as i32) << 8) | (t2 as i32);
+        if (total_lost & 0x800000) != 0 {
+            total_lost |= !0x00FFFFFF;
+        }
 
         let extended_sequence_number = packet.get_u32();
         let jitter = packet.get_u32();

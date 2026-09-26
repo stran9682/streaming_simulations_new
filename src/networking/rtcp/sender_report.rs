@@ -87,8 +87,7 @@ impl SenderReport {
         }
     }
 
-    // TODO: actually calculate this the right way
     pub fn length(&self) -> u16 {
-        24 + (self.reports.len() * 24) as u16
+        (6 + self.reports.len() * 6) as u16
     }
 }

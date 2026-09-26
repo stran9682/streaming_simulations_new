@@ -21,7 +21,7 @@ impl RTCPHeader {
         // TODO: Adjust this number lol
         let mut buf = BytesMut::with_capacity(4);
 
-        let b0 = (2 << 6) | ((self.padding as u8) << 5) | (self.count << 0);
+        let b0 = (2 << 6) | ((self.padding as u8) << 5) | (self.count & 0x1f);
 
         buf.put_u8(b0);
         buf.put_u8(self.packet_type as u8);

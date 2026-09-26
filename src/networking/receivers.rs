@@ -1,6 +1,6 @@
 use std::{
     sync::{Arc, Mutex},
-    time::Instant,
+    time::{Instant, SystemTime},
 };
 
 use bytes::Bytes;
@@ -9,7 +9,9 @@ use tokio::sync::mpsc::{self, Receiver};
 
 use crate::networking::{
     Peer,
-    rtcp::{PacketType, RTCPHeader, SenderReport},
+    rtcp::{
+        PacketType, RTCPHeader, SenderReport, calculate_rtt, ntp_to_middle_32, system_time_to_ntp,
+    },
     rtp::RTPHeader,
 };
 
@@ -20,8 +22,8 @@ async fn packet_handler(
     peer_data: Arc<Mutex<Peer>>,
 ) {
     while let Some((header, _bytes)) = rx.recv().await {
-        let arrival_time = clock.elapsed();
-        let arrival_time = arrival_time.as_millis() as u32 * (clock_rate / 1000);
+        let arrival_time =
+            ((clock.elapsed().as_nanos() * clock_rate as u128) / 1_000_000_000) as u32;
         let difference = arrival_time.wrapping_sub(header.timestamp);
 
         match peer_data.lock() {
@@ -54,27 +56,27 @@ pub async fn packet_receiver(
     tokio::spawn(async move { packet_handler(v_rx, 90_000, clock, peer).await });
 
     while let Ok(mut bytes) = connection.read_datagram().await {
-        if bytes[1] & 0x7F >= 72 {
-            for path in &connection.paths() {
-                if let Some(rtt) = connection.rtt(path.id()) {
-                    println!(
-                        "path: {} \t is relay: {} \t is selected: {} \t remote: {} \t rtt: {:?}",
-                        path.id(),
-                        path.is_relay(),
-                        path.is_selected(),
-                        path.remote_addr(),
-                        rtt.as_micros()
-                    );
-                }
-            }
+        if bytes.len() >= 2 && (72..=95).contains(&(bytes[1] & 0x7F)) {
+            // for path in &connection.paths() {
+            //     if let Some(rtt) = connection.rtt(path.id()) {
+            //         println!(
+            //             "path: {} \t is relay: {} \t is selected: {} \t remote: {} \t rtt: {:?}",
+            //             path.id(),
+            //             path.is_relay(),
+            //             path.is_selected(),
+            //             path.remote_addr(),
+            //             rtt.as_micros()
+            //         );
+            //     }
+            // }
 
-            while !bytes.is_empty() {
+            while bytes.len() >= 4 {
                 let header = RTCPHeader::deserialize(&mut bytes);
 
                 if header.packet_type == PacketType::SenderReport {
                     let sender_report = SenderReport::deserialize(&mut bytes, header.count);
 
-                    let last_sr_timestamp = (sender_report.ntp_time >> 16 & 0xFFFFFFFF) as u32;
+                    let last_sr_timestamp = ntp_to_middle_32(sender_report.ntp_time);
 
                     let peer = if sender_report.ssrc == video_ssrc {
                         video_peer.lock()
@@ -90,6 +92,29 @@ pub async fn packet_receiver(
                             eprintln!("RTCP Lock failure: {}", e);
                         }
                     }
+
+                    let arrival_ntp_middle_32 =
+                        ntp_to_middle_32(system_time_to_ntp(SystemTime::now()));
+
+                    for report in &sender_report.reports {
+                        if let Some(rtt) = calculate_rtt(
+                            report.last_sr_timestamp,
+                            report.delay_since_last_sr,
+                            arrival_ntp_middle_32,
+                        ) {
+                            let peer = if sender_report.ssrc == video_ssrc {
+                                video_peer.lock()
+                            } else {
+                                audio_peer.lock()
+                            };
+
+                            if let Ok(mut p) = peer {
+                                p.update_rtt(rtt);
+                            }
+                        }
+                    }
+                } else {
+                    break;
                 }
             }
         } else {

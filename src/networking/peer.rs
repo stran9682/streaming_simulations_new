@@ -1,4 +1,7 @@
-use std::{collections::VecDeque, time::Instant};
+use std::{
+    collections::VecDeque,
+    time::{Duration, Instant},
+};
 
 use crate::networking::{rtcp::ReceptionReport, rtp::RTPHeader};
 
@@ -41,6 +44,9 @@ pub struct Peer {
 
     /// the received number of packets when the last SR was sent
     pub received_prior: u32,
+
+    /// Round-trip time calculated from RTCP
+    pub rtt: Option<Duration>,
     // skew_calculator: PeerDelay,
 
     // buffer where frames with the same timestamp are grouped together
@@ -64,6 +70,7 @@ impl Peer {
             // swift_peer_model,
             expected_prior: 0,
             received_prior: 0,
+            rtt: None,
             // skew_calculator: PeerDelay::new(skew_threshold),
         }
     }
@@ -74,9 +81,14 @@ impl Peer {
     }
 
     pub fn expected_num_packets(&self) -> u32 {
-        // I'm actually cheating a bit here,
-        // according to Perkin's, you should use the last received sequence number, not highest one
-        self.max_extended_sequence_num() - self.initial_sequence_number.unwrap_or(0) as u32
+        match self.initial_sequence_number {
+            Some(initial) => {
+                self.max_extended_sequence_num()
+                    .saturating_sub(initial as u32)
+                    + 1
+            }
+            None => 0,
+        }
     }
 
     pub fn calculate_fraction_lost(&self) -> u8 {
@@ -88,15 +100,24 @@ impl Peer {
             return 0;
         }
 
-        ((lost_inteval << 8) / expected_interval as i32) as u8
+        let fraction = (lost_inteval << 8) / expected_interval as i32;
+        fraction.clamp(0, 255) as u8
     }
 
     pub fn update_reception_stats(&mut self, difference: u32, header: RTPHeader) {
         self.packets_received += 1;
 
+        if let Some(&prev_diff) = self.window.front() {
+            let d = difference.wrapping_sub(prev_diff) as i32;
+            let d_abs = d.unsigned_abs();
+            if d_abs > self.jitter {
+                self.jitter += (d_abs - self.jitter) / 16;
+            } else {
+                self.jitter -= (self.jitter - d_abs) / 16;
+            }
+        }
+
         self.window.push_front(difference);
-        let d = difference.wrapping_sub(self.window[0]) as i32;
-        self.jitter = self.jitter + (d.unsigned_abs() - self.jitter) / 16;
 
         if self.window.len() > WINDOW_SIZE {
             self.window.pop_back();
@@ -137,27 +158,37 @@ impl Peer {
     pub fn update_last_sr_timestamp(&mut self, last_sr_timestamp: u32) {
         self.last_sr_timestamp = last_sr_timestamp;
         self.delay_since_last_sr = Some(Instant::now());
-        self.expected_prior = self.expected_num_packets();
-        self.received_prior = self.packets_received
     }
 
-    pub fn reception_report(&self) -> ReceptionReport {
-        // TODO: Not very sure, but total lost should probably be calculated differently
+    pub fn update_rtt(&mut self, rtt: Duration) {
+        self.rtt = Some(rtt);
+    }
+
+    pub fn reception_report(&mut self) -> ReceptionReport {
+        let expected = self.expected_num_packets() as i64;
+        let received = self.packets_received as i64;
+        let total_lost = (expected - received).clamp(-0x800000, 0x7FFFFF) as i32;
+
+        let fraction_lost = self.calculate_fraction_lost();
+        self.expected_prior = self.expected_num_packets();
+        self.received_prior = self.packets_received;
+
         ReceptionReport {
             reportee_ssrc: self.ssrc,
-            fraction_lost: self.calculate_fraction_lost(),
-            total_lost: self
-                .expected_num_packets()
-                .wrapping_sub(self.packets_received),
+            fraction_lost,
+            total_lost,
             extended_sequence_number: self.max_extended_sequence_num(),
             jitter: self.jitter,
             last_sr_timestamp: self.last_sr_timestamp,
-            delay_since_last_sr: match self.delay_since_last_sr {
-                None => 0,
-                Some(time) => {
-                    let elapsed = time.elapsed();
-                    let seconds = elapsed.as_secs();
-                    (seconds * 65536) as u32
+            delay_since_last_sr: if self.last_sr_timestamp == 0 {
+                0
+            } else {
+                match self.delay_since_last_sr {
+                    None => 0,
+                    Some(time) => {
+                        let elapsed = time.elapsed();
+                        ((elapsed.as_nanos() * 65536) / 1_000_000_000) as u32
+                    }
                 }
             },
         }
