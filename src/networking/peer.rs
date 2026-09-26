@@ -1,7 +1,4 @@
-use std::{
-    collections::VecDeque,
-    time::{Duration, Instant},
-};
+use std::{collections::VecDeque, time::Instant};
 
 use crate::networking::{rtcp::ReceptionReport, rtp::RTPHeader};
 
@@ -34,7 +31,7 @@ pub struct Peer {
     pub min_window: u32,
 
     /// middle 32 bytes of the NTP timestamp as received of the last SR from this peer
-    pub last_sr_timestamp: u32,
+    pub last_sr_timestamp: Option<u32>,
 
     /// Time since the last SR has been received
     pub delay_since_last_sr: Option<Instant>,
@@ -44,9 +41,6 @@ pub struct Peer {
 
     /// the received number of packets when the last SR was sent
     pub received_prior: u32,
-
-    /// Round-trip time calculated from RTCP
-    pub rtt: Option<Duration>,
     // skew_calculator: PeerDelay,
 
     // buffer where frames with the same timestamp are grouped together
@@ -59,7 +53,7 @@ impl Peer {
             ssrc,
             jitter: 0,
             delay_since_last_sr: None,
-            last_sr_timestamp: 0,
+            last_sr_timestamp: None,
             packets_received: 0,
             wrap_around_count: 0,
             max_sequence_number: 0,
@@ -70,7 +64,6 @@ impl Peer {
             // swift_peer_model,
             expected_prior: 0,
             received_prior: 0,
-            rtt: None,
             // skew_calculator: PeerDelay::new(skew_threshold),
         }
     }
@@ -156,12 +149,8 @@ impl Peer {
     }
 
     pub fn update_last_sr_timestamp(&mut self, last_sr_timestamp: u32) {
-        self.last_sr_timestamp = last_sr_timestamp;
+        self.last_sr_timestamp = Some(last_sr_timestamp);
         self.delay_since_last_sr = Some(Instant::now());
-    }
-
-    pub fn update_rtt(&mut self, rtt: Duration) {
-        self.rtt = Some(rtt);
     }
 
     pub fn reception_report(&mut self) -> ReceptionReport {
@@ -179,16 +168,12 @@ impl Peer {
             total_lost,
             extended_sequence_number: self.max_extended_sequence_num(),
             jitter: self.jitter,
-            last_sr_timestamp: self.last_sr_timestamp,
-            delay_since_last_sr: if self.last_sr_timestamp == 0 {
-                0
-            } else {
-                match self.delay_since_last_sr {
-                    None => 0,
-                    Some(time) => {
-                        let elapsed = time.elapsed();
-                        ((elapsed.as_nanos() * 65536) / 1_000_000_000) as u32
-                    }
+            last_sr_timestamp: self.last_sr_timestamp.unwrap_or(0),
+            delay_since_last_sr: match self.delay_since_last_sr {
+                None => 0,
+                Some(time) => {
+                    let elapsed = time.elapsed();
+                    ((elapsed.as_nanos() * 65536) / 1_000_000_000) as u32
                 }
             },
         }

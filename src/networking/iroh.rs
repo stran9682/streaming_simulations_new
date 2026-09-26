@@ -47,7 +47,7 @@ impl ProtocolHandler for Iroh {
         send.finish()?;
 
         println!("Returned response");
-        self.send_rtp(connection, peer_session_info);
+        self.send_rtp(connection, peer_session_info).await;
 
         Ok(())
     }
@@ -80,12 +80,12 @@ impl Iroh {
         let peer_session_info: SessionInfo = serde_json::from_slice(&bytes)?;
         println!("received response");
 
-        self.send_rtp(connection, peer_session_info);
+        self.send_rtp(connection, peer_session_info).await;
 
         Ok(())
     }
 
-    fn send_rtp(&self, connection: Connection, peer_session_info: SessionInfo) {
+    async fn send_rtp(&self, connection: Connection, peer_session_info: SessionInfo) {
         let audio: Arc<RTPSession> = Arc::new(RTPSession::new(
             self.session_info.audio_ssrc,
             OPUS_CLOCK_RATE,
@@ -102,29 +102,48 @@ impl Iroh {
 
         let rx = self.bytes_receiver.resubscribe();
         let clock = self.clock;
-        tokio::spawn(async move {
-            println!("Sending packets");
 
-            tokio::select! {
-                _ = send(
-                    connection.clone(),
-                    audio.clone(),
-                    video.clone(),
-                    rx,
-                ) => (),
-                _ = packet_receiver(
-                    connection.clone(),
-                    audio_peer.clone(),
-                    video_peer.clone(),
-                    peer_session_info.video_ssrc,
-                    clock,
-                ) => (),
-                _ = send_rtcp(audio.clone(), connection.clone(), audio_peer.clone()) => (),
-                _ = send_rtcp(video.clone(), connection.clone(), video_peer.clone()) => ()
-            }
+        println!("Sending packets");
 
-            println!("Connection terminated")
+        let send_connection = connection.clone();
+        let send_audio_rtp = audio.clone();
+        let send_video_rtp = video.clone();
+        let send =
+            tokio::spawn(
+                async move { send(send_connection, send_audio_rtp, send_video_rtp, rx).await },
+            );
+
+        let recv_connection = connection.clone();
+        let recv_audio_peer = audio_peer.clone();
+        let recv_video_peer = video_peer.clone();
+        let recv = tokio::spawn(async move {
+            packet_receiver(
+                recv_connection,
+                recv_audio_peer,
+                recv_video_peer,
+                peer_session_info.video_ssrc,
+                clock,
+            )
+            .await;
         });
+
+        let audio_connection = connection.clone();
+        let a_rtcp = tokio::spawn(async move {
+            send_rtcp(audio, audio_connection, audio_peer).await;
+        });
+
+        let v_rtcp = tokio::spawn(async move {
+            send_rtcp(video, connection, video_peer).await;
+        });
+
+        tokio::select! {
+            _ = recv => (),
+            _ = send => (),
+            _ = a_rtcp => (),
+            _ = v_rtcp => ()
+        }
+
+        println!("Connection terminated")
     }
 }
 

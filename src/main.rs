@@ -27,7 +27,7 @@ async fn main() -> anyhow::Result<()> {
     let iroh = Arc::new(Iroh::new(receiver, clock, session_info));
     generate_packets(clock, sender);
 
-    let router = Router::builder(endpoint.clone())
+    let _router = Router::builder(endpoint.clone())
         .accept(b"coal", Arc::clone(&iroh))
         .spawn();
 

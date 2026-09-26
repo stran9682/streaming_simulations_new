@@ -183,7 +183,7 @@ pub async fn send_rtcp(
 
         let packet = packet.freeze();
 
-        match connection.send_datagram_wait(packet.clone()).await {
+        match connection.send_datagram(packet) {
             Ok(_) => {}
             Err(e) => eprintln!("Failed to send RTCP to {}: {}", connection.remote_id(), e),
         }

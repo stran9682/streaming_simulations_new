@@ -8,10 +8,8 @@ use iroh::endpoint::Connection;
 use tokio::sync::mpsc::{self, Receiver};
 
 use crate::networking::{
-    Peer,
-    rtcp::{
-        PacketType, RTCPHeader, SenderReport, calculate_rtt, ntp_to_middle_32, system_time_to_ntp,
-    },
+    H264_CLOCK_RATE, OPUS_CLOCK_RATE, Peer,
+    rtcp::{PacketType, RTCPHeader, SenderReport, ntp_to_middle_32, system_time_to_ntp},
     rtp::RTPHeader,
 };
 
@@ -43,17 +41,17 @@ pub async fn packet_receiver(
     connection: Connection,
     audio_peer: Arc<Mutex<Peer>>,
     video_peer: Arc<Mutex<Peer>>,
-    video_ssrc: u32,
+    peer_video_ssrc: u32,
     clock: Instant,
 ) {
     let (a_tx, a_rx) = mpsc::channel::<(RTPHeader, Bytes)>(100);
     let (v_tx, v_rx) = mpsc::channel::<(RTPHeader, Bytes)>(100);
 
     let peer = audio_peer.clone();
-    tokio::spawn(async move { packet_handler(a_rx, 48_000, clock, peer).await });
+    tokio::spawn(async move { packet_handler(a_rx, OPUS_CLOCK_RATE as u32, clock, peer).await });
 
     let peer = video_peer.clone();
-    tokio::spawn(async move { packet_handler(v_rx, 90_000, clock, peer).await });
+    tokio::spawn(async move { packet_handler(v_rx, H264_CLOCK_RATE as u32, clock, peer).await });
 
     while let Ok(mut bytes) = connection.read_datagram().await {
         if bytes.len() >= 2 && (72..=95).contains(&(bytes[1] & 0x7F)) {
@@ -78,7 +76,7 @@ pub async fn packet_receiver(
 
                     let last_sr_timestamp = ntp_to_middle_32(sender_report.ntp_time);
 
-                    let peer = if sender_report.ssrc == video_ssrc {
+                    let peer = if sender_report.ssrc == peer_video_ssrc {
                         video_peer.lock()
                     } else {
                         audio_peer.lock()
@@ -93,25 +91,24 @@ pub async fn packet_receiver(
                         }
                     }
 
+                    // Determining our RTT from the RR
                     let arrival_ntp_middle_32 =
                         ntp_to_middle_32(system_time_to_ntp(SystemTime::now()));
 
                     for report in &sender_report.reports {
-                        if let Some(rtt) = calculate_rtt(
-                            report.last_sr_timestamp,
-                            report.delay_since_last_sr,
+                        println!(
+                            "Arrival Time: {}\nLSR: {}\nDSLR: {}",
                             arrival_ntp_middle_32,
-                        ) {
-                            let peer = if sender_report.ssrc == video_ssrc {
-                                video_peer.lock()
-                            } else {
-                                audio_peer.lock()
-                            };
+                            report.last_sr_timestamp,
+                            report.delay_since_last_sr
+                        );
 
-                            if let Ok(mut p) = peer {
-                                p.update_rtt(rtt);
-                            }
-                        }
+                        let rtt = arrival_ntp_middle_32
+                            - report.last_sr_timestamp
+                            - report.delay_since_last_sr;
+                        let rtt_ms = (rtt as f64 * 1000.0) / 65536.0;
+
+                        println!("A - DLSR - LSR: {} ({:.2} ms)\n", rtt, rtt_ms);
                     }
                 } else {
                     break;
@@ -120,7 +117,7 @@ pub async fn packet_receiver(
         } else {
             let header = RTPHeader::deserialize(&mut bytes);
 
-            let tx = if header.ssrc == video_ssrc {
+            let tx = if header.ssrc == peer_video_ssrc {
                 &v_tx
             } else {
                 &a_tx

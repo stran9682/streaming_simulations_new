@@ -9,28 +9,18 @@ use crate::networking::{PacketData, PacketType};
 async fn generate_video_frame(tx: Sender<PacketData>, clock: Instant) -> anyhow::Result<()> {
     loop {
         let mut file = File::open("input.h264").await?;
+        let mut h264_data = Vec::new();
+        file.read_to_end(&mut h264_data).await?;
 
-        loop {
-            let mut avcc_start_code: [u8; 4] = [0; 4];
+        let bytes = Bytes::from(h264_data);
+        let nalus = parse_annex_b_nalus(&bytes);
 
-            if file.read_exact(&mut avcc_start_code).await.is_err() {
-                break;
-            }
-
-            let nal_unit_length = u32::from_be_bytes(avcc_start_code) as usize;
-
-            let mut buffer = vec![0; nal_unit_length];
-            let bytes_read = file.read_buf(&mut buffer).await?;
-
-            if bytes_read == 0 {
-                break;
-            }
-
+        for nalu in nalus {
             let elapsed = ((clock.elapsed().as_nanos() * 90_000) / 1_000_000_000) as u32;
 
             let packet_data = PacketData {
                 packet_type: PacketType::Video,
-                data: Bytes::copy_from_slice(&buffer[..bytes_read]),
+                data: nalu,
                 timestamp: elapsed,
             };
 
@@ -41,6 +31,41 @@ async fn generate_video_frame(tx: Sender<PacketData>, clock: Instant) -> anyhow:
             tokio::time::sleep(Duration::from_secs_f32(1.0 / 30.0)).await;
         }
     }
+}
+
+pub fn parse_annex_b_nalus(data: &Bytes) -> Vec<Bytes> {
+    let mut nalus = Vec::new();
+    let mut start_indices = Vec::new();
+    let len = data.len();
+
+    let mut i = 0;
+    while i + 2 < len {
+        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
+            start_indices.push(i);
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+
+    for (idx, &sc_pos) in start_indices.iter().enumerate() {
+        let nalu_start = sc_pos + 3;
+        let mut nalu_end = if idx + 1 < start_indices.len() {
+            start_indices[idx + 1]
+        } else {
+            len
+        };
+
+        while nalu_end > nalu_start && data[nalu_end - 1] == 0 {
+            nalu_end -= 1;
+        }
+
+        if nalu_end > nalu_start {
+            nalus.push(data.slice(nalu_start..nalu_end));
+        }
+    }
+
+    nalus
 }
 
 async fn generate_audio_sample(tx: Sender<PacketData>, clock: Instant) -> anyhow::Result<()> {
