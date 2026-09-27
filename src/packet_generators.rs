@@ -136,7 +136,15 @@ fn parse_ogg_opus_packets(file: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
 
 pub fn generate_packets(clock: Instant, sender: Sender<PacketData>) {
     let sender_copy = sender.clone();
-    tokio::spawn(async move { generate_video_frame(sender_copy, clock).await });
+    tokio::spawn(async move {
+        if let Err(e) = generate_video_frame(sender_copy, clock).await {
+            eprintln!("Couldn't generate video frames: {}", e);
+        }
+    });
 
-    tokio::spawn(async move { generate_audio_sample(sender, clock).await });
+    tokio::spawn(async move {
+        if let Err(e) = generate_audio_sample(sender, clock).await {
+            eprintln!("Couldn't generate video frames: {}", e);
+        }
+    });
 }
