@@ -11,6 +11,7 @@ use crate::networking::{
     H264_CLOCK_RATE, OPUS_CLOCK_RATE, Peer,
     rtcp::{PacketType, RTCPHeader, SenderReport, ntp_to_middle_32, system_time_to_ntp},
     rtp::RTPHeader,
+    write_stats,
 };
 
 async fn packet_handler(
@@ -53,69 +54,59 @@ pub async fn packet_receiver(
     let peer = video_peer.clone();
     tokio::spawn(async move { packet_handler(v_rx, H264_CLOCK_RATE as u32, clock, peer).await });
 
+    let (stats_send, stats_recv) = mpsc::channel::<(super::PacketType, f64)>(100);
+    tokio::spawn(async move {
+        if let Err(e) = write_stats(stats_recv).await {
+            eprintln!("Error occured attempting to write to file: {}", e);
+        };
+    });
+
     while let Ok(mut bytes) = connection.read_datagram().await {
         if bytes.len() >= 2 && (72..=95).contains(&(bytes[1] & 0x7F)) {
-            // for path in &connection.paths() {
-            //     if let Some(rtt) = connection.rtt(path.id()) {
-            //         println!(
-            //             "path: {} \t is relay: {} \t is selected: {} \t remote: {} \t rtt: {:?}",
-            //             path.id(),
-            //             path.is_relay(),
-            //             path.is_selected(),
-            //             path.remote_addr(),
-            //             rtt.as_micros()
-            //         );
-            //     }
-            // }
-
             while bytes.len() >= 4 {
                 let header = RTCPHeader::deserialize(&mut bytes);
 
-                if header.packet_type == PacketType::SenderReport {
-                    let sender_report = SenderReport::deserialize(&mut bytes, header.count);
-
-                    let last_sr_timestamp = ntp_to_middle_32(sender_report.ntp_time);
-
-                    let peer = if sender_report.ssrc == peer_video_ssrc {
-                        video_peer.lock()
-                    } else {
-                        audio_peer.lock()
-                    };
-
-                    match peer {
-                        Ok(mut peer) => {
-                            peer.update_last_sr_timestamp(last_sr_timestamp);
-                        }
-                        Err(e) => {
-                            eprintln!("RTCP Lock failure: {}", e);
-                        }
-                    }
-
-                    // Determining our RTT from the RR
-                    let arrival_ntp_middle_32 =
-                        ntp_to_middle_32(system_time_to_ntp(SystemTime::now()));
-
-                    for report in &sender_report.reports {
-                        if report.last_sr_timestamp == 0 || report.delay_since_last_sr == 0 {
-                            continue;
-                        }
-
-                        println!(
-                            "Arrival Time: {}\nLSR: {}\nDSLR: {}",
-                            arrival_ntp_middle_32,
-                            report.last_sr_timestamp,
-                            report.delay_since_last_sr
-                        );
-
-                        let rtt = arrival_ntp_middle_32
-                            - report.last_sr_timestamp
-                            - report.delay_since_last_sr;
-                        let rtt_ms = (rtt as f64 * 1000.0) / 65536.0;
-
-                        println!("A - DLSR - LSR: {} ({:.2} ms)\n", rtt, rtt_ms);
-                    }
-                } else {
+                if header.packet_type != PacketType::SenderReport {
                     break;
+                }
+
+                let sender_report = SenderReport::deserialize(&mut bytes, header.count);
+
+                let last_sr_timestamp = ntp_to_middle_32(sender_report.ntp_time);
+
+                let (peer, packet_type) = if sender_report.ssrc == peer_video_ssrc {
+                    (video_peer.lock(), super::PacketType::Video)
+                } else {
+                    (audio_peer.lock(), super::PacketType::Audio)
+                };
+
+                match peer {
+                    Ok(mut peer) => {
+                        peer.update_last_sr_timestamp(last_sr_timestamp);
+                    }
+                    Err(e) => {
+                        eprintln!("RTCP Lock failure: {}", e);
+                    }
+                }
+
+                // Determining our RTT from the RR
+                let arrival_ntp_middle_32 = ntp_to_middle_32(system_time_to_ntp(SystemTime::now()));
+
+                for report in &sender_report.reports {
+                    if report.last_sr_timestamp == 0 || report.delay_since_last_sr == 0 {
+                        continue;
+                    }
+
+                    let rtt = arrival_ntp_middle_32
+                        - report.last_sr_timestamp
+                        - report.delay_since_last_sr;
+                    let rtt_ms = (rtt as f64 * 1000.0) / 65536.0;
+
+                    println!("A - DLSR - LSR: {} ({:.2} ms)\n", rtt, rtt_ms);
+
+                    if let Err(e) = stats_send.try_send((packet_type, rtt_ms)) {
+                        eprintln!("Couldn't write stat, Reason: {}", e)
+                    };
                 }
             }
         } else {

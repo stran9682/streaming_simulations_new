@@ -41,19 +41,3 @@ pub fn system_time_to_ntp(now: SystemTime) -> u64 {
 pub fn ntp_to_middle_32(ntp: u64) -> u32 {
     ((ntp >> 16) & 0xFFFFFFFF) as u32
 }
-
-pub fn calculate_rtt(last_sr: u32, dlsr: u32, arrival_ntp_middle_32: u32) -> Option<Duration> {
-    if last_sr == 0 {
-        return None;
-    }
-
-    let elapsed = arrival_ntp_middle_32.wrapping_sub(last_sr);
-
-    if elapsed >= 0x8000_0000 {
-        return None;
-    }
-
-    let rtt_units = elapsed.saturating_sub(dlsr);
-    let rtt_nanos = (rtt_units as u128 * 1_000_000_000) / 65536;
-    Some(Duration::from_nanos(rtt_nanos as u64))
-}

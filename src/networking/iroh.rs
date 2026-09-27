@@ -1,5 +1,5 @@
 use std::{
-    io,
+    io::{self},
     sync::{Arc, Mutex},
     time::Instant,
 };
