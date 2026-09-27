@@ -27,7 +27,7 @@ pub async fn send(
 
     let mut buf = BytesMut::with_capacity(payload_size);
 
-    while let Ok(packet_data) = bytes_receiver.recv().await {
+    'receiver: while let Ok(packet_data) = bytes_receiver.recv().await {
         let packets = match packet_data.packet_type {
             Audio => {
                 let header =
@@ -124,7 +124,7 @@ pub async fn send(
         for packet in packets {
             if let Err(e) = connection.send_datagram(packet) {
                 eprintln!("Send datagram error: {}", e);
-                break;
+                break 'receiver;
             }
         }
     }
@@ -183,9 +183,9 @@ pub async fn send_rtcp(
 
         let packet = packet.freeze();
 
-        match connection.send_datagram(packet) {
-            Ok(_) => {}
-            Err(e) => eprintln!("Failed to send RTCP to {}: {}", connection.remote_id(), e),
+        if let Err(e) = connection.send_datagram(packet) {
+            eprintln!("Failed to send RTCP to {}: {}", connection.remote_id(), e);
+            break;
         }
     }
 }

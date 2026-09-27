@@ -1,6 +1,6 @@
 use std::{collections::HashSet, env, str::FromStr, sync::Arc, time::Instant};
 
-use iroh::{Endpoint, EndpointId, PublicKey, endpoint::presets, protocol::Router};
+use iroh::{Endpoint, PublicKey, endpoint::presets, protocol::Router};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId, api::Event};
 use streaming_simulations_new::{
     networking::{
