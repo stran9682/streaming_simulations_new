@@ -96,6 +96,10 @@ pub async fn packet_receiver(
                         ntp_to_middle_32(system_time_to_ntp(SystemTime::now()));
 
                     for report in &sender_report.reports {
+                        if report.last_sr_timestamp == 0 || report.delay_since_last_sr == 0 {
+                            continue;
+                        }
+
                         println!(
                             "Arrival Time: {}\nLSR: {}\nDSLR: {}",
                             arrival_ntp_middle_32,

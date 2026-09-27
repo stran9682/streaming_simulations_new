@@ -47,7 +47,7 @@ impl ProtocolHandler for Iroh {
         send.finish()?;
 
         println!("Returned response");
-        self.send_rtp(connection, peer_session_info).await;
+        self.send_rtp(connection, peer_session_info);
 
         Ok(())
     }
@@ -66,7 +66,11 @@ impl Iroh {
         }
     }
 
-    pub async fn make_request(&self, endpoint: Endpoint, remote: EndpointId) -> anyhow::Result<()> {
+    pub async fn make_request(
+        &self,
+        endpoint: &Endpoint,
+        remote: EndpointId,
+    ) -> anyhow::Result<()> {
         let connection = endpoint.connect(remote, b"coal").await?;
         let (mut send, mut recv) = connection.open_bi().await?;
 
@@ -80,12 +84,12 @@ impl Iroh {
         let peer_session_info: SessionInfo = serde_json::from_slice(&bytes)?;
         println!("received response");
 
-        self.send_rtp(connection, peer_session_info).await;
+        self.send_rtp(connection, peer_session_info);
 
         Ok(())
     }
 
-    async fn send_rtp(&self, connection: Connection, peer_session_info: SessionInfo) {
+    fn send_rtp(&self, connection: Connection, peer_session_info: SessionInfo) {
         let audio: Arc<RTPSession> = Arc::new(RTPSession::new(
             self.session_info.audio_ssrc,
             OPUS_CLOCK_RATE,
@@ -136,14 +140,16 @@ impl Iroh {
             send_rtcp(video, connection, video_peer).await;
         });
 
-        tokio::select! {
-            _ = recv => (),
-            _ = send => (),
-            _ = a_rtcp => (),
-            _ = v_rtcp => ()
-        }
+        tokio::spawn(async move {
+            tokio::select! {
+                _ = recv => (),
+                _ = send => (),
+                _ = a_rtcp => (),
+                _ = v_rtcp => ()
+            }
 
-        println!("Connection terminated")
+            println!("Connection terminated")
+        });
     }
 }
 
