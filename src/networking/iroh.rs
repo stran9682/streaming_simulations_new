@@ -27,7 +27,6 @@ pub struct Iroh {
 
 impl ProtocolHandler for Iroh {
     async fn accept(&self, connection: Connection) -> Result<(), iroh::protocol::AcceptError> {
-        println!("Received request");
         let (mut send, mut recv) = connection.accept_bi().await?;
 
         let bytes = recv
@@ -46,7 +45,6 @@ impl ProtocolHandler for Iroh {
             .map_err(AcceptError::from_err)?;
         send.finish()?;
 
-        println!("Returned response");
         self.send_rtp(connection, peer_session_info);
 
         Ok(())
@@ -77,12 +75,10 @@ impl Iroh {
         let session_info_bytes = serde_json::to_vec(&self.session_info)?;
         send.write_all(&session_info_bytes).await?;
         send.finish()?;
-        println!("made request");
 
         let bytes = recv.read_to_end(1000).await?;
 
         let peer_session_info: SessionInfo = serde_json::from_slice(&bytes)?;
-        println!("received response");
 
         self.send_rtp(connection, peer_session_info);
 
@@ -106,8 +102,6 @@ impl Iroh {
 
         let rx = self.bytes_receiver.resubscribe();
         let clock = self.clock;
-
-        println!("Sending packets");
 
         let send_connection = connection.clone();
         let send_audio_rtp = audio.clone();
@@ -147,8 +141,6 @@ impl Iroh {
                 _ = a_rtcp => (),
                 _ = v_rtcp => ()
             }
-
-            println!("Connection terminated")
         });
     }
 }

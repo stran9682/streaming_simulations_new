@@ -31,12 +31,15 @@ pub struct PacketData {
 const OPUS_CLOCK_RATE: u64 = 48_000;
 const H264_CLOCK_RATE: u64 = 90_000;
 
-pub async fn write_stats(mut rx: mpsc::Receiver<(PacketType, f64)>) -> anyhow::Result<()> {
-    let audio_stats = File::create("audio-stats.csv").await?;
-    let mut audio_stats_writer = BufWriter::new(audio_stats);
+pub async fn write_stats(
+    mut rx: mpsc::Receiver<(PacketType, f64)>,
+    ssrc: u32,
+) -> anyhow::Result<()> {
+    let audio_stats = File::create(format!("audio-stats-{ssrc}.csv")).await?;
+    let mut audio_stats_writer = BufWriter::with_capacity(256, audio_stats);
 
-    let video_stats = File::create("video-stats.csv").await?;
-    let mut video_stats_writer = BufWriter::new(video_stats);
+    let video_stats = File::create(format!("video-stats-{ssrc}.csv")).await?;
+    let mut video_stats_writer = BufWriter::with_capacity(256, video_stats);
 
     while let Some((packet_type, rtt)) = rx.recv().await {
         let writer = match packet_type {
@@ -46,6 +49,9 @@ pub async fn write_stats(mut rx: mpsc::Receiver<(PacketType, f64)>) -> anyhow::R
 
         writer.write(&format!("{rtt}\n").into_bytes()).await?;
     }
+
+    audio_stats_writer.flush().await?;
+    video_stats_writer.flush().await?;
 
     Ok(())
 }
