@@ -3,9 +3,8 @@ use std::{
     time::{Instant, SystemTime},
 };
 
-use bytes::Bytes;
 use iroh::endpoint::Connection;
-use tokio::sync::mpsc::{self, Receiver};
+use tokio::sync::mpsc::{self};
 
 use crate::networking::{
     H264_CLOCK_RATE, OPUS_CLOCK_RATE, Peer,
@@ -14,30 +13,6 @@ use crate::networking::{
     write_stats,
 };
 
-async fn packet_handler(
-    mut rx: Receiver<(RTPHeader, Bytes)>,
-    clock_rate: u32,
-    clock: Instant,
-    peer_data: Arc<Mutex<Peer>>,
-) {
-    while let Some((header, _bytes)) = rx.recv().await {
-        let arrival_time =
-            ((clock.elapsed().as_nanos() * clock_rate as u128) / 1_000_000_000) as u32;
-        let difference = arrival_time.wrapping_sub(header.timestamp);
-
-        match peer_data.lock() {
-            Ok(mut peer) => {
-                peer.update_reception_stats(difference, header);
-            }
-            Err(e) => {
-                eprintln!("RTP receiver lock failure: {e}")
-            }
-        }
-    }
-
-    println!("Dropped");
-}
-
 pub async fn packet_receiver(
     connection: Connection,
     audio_peer: Arc<Mutex<Peer>>,
@@ -45,15 +20,6 @@ pub async fn packet_receiver(
     peer_video_ssrc: u32,
     clock: Instant,
 ) {
-    let (a_tx, a_rx) = mpsc::channel::<(RTPHeader, Bytes)>(100);
-    let (v_tx, v_rx) = mpsc::channel::<(RTPHeader, Bytes)>(100);
-
-    let peer = audio_peer.clone();
-    tokio::spawn(async move { packet_handler(a_rx, OPUS_CLOCK_RATE as u32, clock, peer).await });
-
-    let peer = video_peer.clone();
-    tokio::spawn(async move { packet_handler(v_rx, H264_CLOCK_RATE as u32, clock, peer).await });
-
     let (stats_send, stats_recv) = mpsc::channel::<(super::PacketType, f64)>(100);
     tokio::spawn(async move {
         if let Err(e) = write_stats(stats_recv).await {
@@ -112,15 +78,18 @@ pub async fn packet_receiver(
         } else {
             let header = RTPHeader::deserialize(&mut bytes);
 
-            let tx = if header.ssrc == peer_video_ssrc {
-                &v_tx
+            let (peer_lock, clock_rate) = if header.ssrc == peer_video_ssrc {
+                (&video_peer, H264_CLOCK_RATE as u32)
             } else {
-                &a_tx
+                (&audio_peer, OPUS_CLOCK_RATE as u32)
             };
 
-            if let Err(e) = tx.send((header, bytes)).await {
-                eprintln!("RTP receiver failure: {}", e);
-                break;
+            let arrival_time =
+                ((clock.elapsed().as_nanos() * clock_rate as u128) / 1_000_000_000) as u32;
+            let difference = arrival_time.wrapping_sub(header.timestamp);
+
+            if let Ok(mut peer) = peer_lock.lock() {
+                peer.update_reception_stats(difference, header);
             }
         }
     }

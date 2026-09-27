@@ -1,4 +1,4 @@
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 pub mod reception_report;
 pub mod rtcp_header;
