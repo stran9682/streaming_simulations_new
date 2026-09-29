@@ -61,5 +61,5 @@ pub struct Stats {
     pub packet_type: PacketType,
     pub rtt: f64,
     pub fraction_lost: f64,
-    pub jitter: u32,
+    pub jitter: f64,
 }

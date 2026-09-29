@@ -75,8 +75,8 @@ pub async fn packet_receiver(
                     }
 
                     let jitter = match packet_type {
-                        super::PacketType::Audio => 48_000 * report.jitter,
-                        super::PacketType::Video => 90_000 * report.jitter,
+                        super::PacketType::Audio => report.jitter as f64 / 48_000.0,
+                        super::PacketType::Video => report.jitter as f64 / 90_000.0,
                     };
 
                     if let Err(e) = stats_send.try_send(Stats {
