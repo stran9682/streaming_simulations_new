@@ -7,7 +7,7 @@ use iroh::endpoint::Connection;
 use tokio::sync::mpsc::{self};
 
 use crate::networking::{
-    H264_CLOCK_RATE, OPUS_CLOCK_RATE, Peer,
+    H264_CLOCK_RATE, OPUS_CLOCK_RATE, Peer, Stats,
     rtcp::{PacketType, RTCPHeader, SenderReport, ntp_to_middle_32, system_time_to_ntp},
     rtp::RTPHeader,
     write_stats,
@@ -20,7 +20,7 @@ pub async fn packet_receiver(
     peer_video_ssrc: u32,
     clock: Instant,
 ) {
-    let (stats_send, stats_recv) = mpsc::channel::<(super::PacketType, f64, f64)>(100);
+    let (stats_send, stats_recv) = mpsc::channel::<Stats>(100);
     tokio::spawn(async move {
         if let Err(e) = write_stats(stats_recv, peer_video_ssrc).await {
             eprintln!("Error occured attempting to write to file: {}", e);
@@ -74,7 +74,17 @@ pub async fn packet_receiver(
                         println!("A - DLSR - LSR: {} ({:.2} ms)\n", rtt, rtt_ms);
                     }
 
-                    if let Err(e) = stats_send.try_send((packet_type, rtt_ms, fraction_lost)) {
+                    let jitter = match packet_type {
+                        super::PacketType::Audio => 48_000 * report.jitter,
+                        super::PacketType::Video => 90_000 * report.jitter,
+                    };
+
+                    if let Err(e) = stats_send.try_send(Stats {
+                        packet_type,
+                        rtt: rtt_ms,
+                        fraction_lost,
+                        jitter,
+                    }) {
                         eprintln!("Couldn't write stat, Reason: {}", e)
                     };
                 }
