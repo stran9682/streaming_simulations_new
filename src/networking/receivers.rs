@@ -20,7 +20,7 @@ pub async fn packet_receiver(
     peer_video_ssrc: u32,
     clock: Instant,
 ) {
-    let (stats_send, stats_recv) = mpsc::channel::<(super::PacketType, f64)>(100);
+    let (stats_send, stats_recv) = mpsc::channel::<(super::PacketType, f64, f64)>(100);
     tokio::spawn(async move {
         if let Err(e) = write_stats(stats_recv, peer_video_ssrc).await {
             eprintln!("Error occured attempting to write to file: {}", e);
@@ -68,11 +68,13 @@ pub async fn packet_receiver(
                         - report.delay_since_last_sr;
                     let rtt_ms = (rtt as f64 * 1000.0) / 65536.0;
 
+                    let fraction_lost = report.fraction_lost as f64 / 256.0;
+
                     if cfg!(debug_assertions) {
                         println!("A - DLSR - LSR: {} ({:.2} ms)\n", rtt, rtt_ms);
                     }
 
-                    if let Err(e) = stats_send.try_send((packet_type, rtt_ms)) {
+                    if let Err(e) = stats_send.try_send((packet_type, rtt_ms, fraction_lost)) {
                         eprintln!("Couldn't write stat, Reason: {}", e)
                     };
                 }
