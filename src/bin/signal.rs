@@ -9,6 +9,8 @@ async fn main() -> anyhow::Result<()> {
     let endpoint = Endpoint::bind(presets::N0).await?;
     endpoint.online().await;
 
+    println!("endpoint: {}", endpoint.id());
+
     let gossip = Gossip::builder().spawn(endpoint.clone());
 
     let _router = Router::builder(endpoint.clone())
