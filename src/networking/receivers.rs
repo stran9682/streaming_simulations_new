@@ -41,12 +41,12 @@ pub async fn packet_receiver(
                 let last_sr_timestamp = ntp_to_middle_32(sender_report.ntp_time);
 
                 let (peer, packet_type) = if sender_report.ssrc == peer_video_ssrc {
-                    (video_peer.lock(), super::PacketType::Video)
+                    (&video_peer, super::PacketType::Video)
                 } else {
-                    (audio_peer.lock(), super::PacketType::Audio)
+                    (&audio_peer, super::PacketType::Audio)
                 };
 
-                match peer {
+                match peer.lock() {
                     Ok(mut peer) => {
                         peer.update_last_sr_timestamp(last_sr_timestamp);
                     }
