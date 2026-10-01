@@ -15,6 +15,8 @@ use tokio::{
     sync::mpsc,
 };
 
+use crate::networking::rtcp::ReceptionReport;
+
 #[derive(Clone, Copy)]
 pub enum PacketType {
     Video,
@@ -38,15 +40,43 @@ pub async fn write_stats(mut rx: mpsc::Receiver<Stats>, ssrc: u32) -> anyhow::Re
     let video_stats = File::create(format!("video-stats-{ssrc}.csv")).await?;
     let mut video_stats_writer = BufWriter::with_capacity(256, video_stats);
 
+    audio_stats_writer
+        .write(b"rtt,jitter,total lost,fraction lost")
+        .await?;
+    video_stats_writer
+        .write(b"rtt,jitter,total lost,fraction lost")
+        .await?;
+
     while let Some(stats) = rx.recv().await {
         let writer = match stats.packet_type {
             PacketType::Audio => &mut audio_stats_writer,
             PacketType::Video => &mut video_stats_writer,
         };
 
+        let report = stats.report;
+
+        let rtt =
+            stats.arrival_ntp_middle_32 - report.last_sr_timestamp - report.delay_since_last_sr;
+        let rtt_ms = (rtt as f64 * 1000.0) / 65536.0;
+
+        let fraction_lost = report.fraction_lost as f64 / 256.0;
+
+        if cfg!(debug_assertions) {
+            println!("A - DLSR - LSR: {} ({:.2} ms)\n", rtt, rtt_ms);
+        }
+
+        let jitter = match stats.packet_type {
+            PacketType::Audio => report.jitter as f64 / 48_000.0,
+            PacketType::Video => report.jitter as f64 / 90_000.0,
+        };
+
         writer
             .write(
-                &format!("{},{},{}\n", stats.rtt, stats.fraction_lost, stats.jitter).into_bytes(),
+                &format!(
+                    "{},{},{},{}\n",
+                    rtt, jitter, report.total_lost, fraction_lost
+                )
+                .into_bytes(),
             )
             .await?;
     }
@@ -59,7 +89,6 @@ pub async fn write_stats(mut rx: mpsc::Receiver<Stats>, ssrc: u32) -> anyhow::Re
 
 pub struct Stats {
     pub packet_type: PacketType,
-    pub rtt: f64,
-    pub fraction_lost: f64,
-    pub jitter: f64,
+    pub report: ReceptionReport,
+    pub arrival_ntp_middle_32: u32,
 }

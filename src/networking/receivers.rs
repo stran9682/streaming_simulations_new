@@ -58,32 +58,15 @@ pub async fn packet_receiver(
                 // Determining our RTT from the RR
                 let arrival_ntp_middle_32 = ntp_to_middle_32(system_time_to_ntp(SystemTime::now()));
 
-                for report in &sender_report.reports {
+                for report in sender_report.reports {
                     if report.last_sr_timestamp == 0 || report.delay_since_last_sr == 0 {
                         continue;
                     }
 
-                    let rtt = arrival_ntp_middle_32
-                        - report.last_sr_timestamp
-                        - report.delay_since_last_sr;
-                    let rtt_ms = (rtt as f64 * 1000.0) / 65536.0;
-
-                    let fraction_lost = report.fraction_lost as f64 / 256.0;
-
-                    if cfg!(debug_assertions) {
-                        println!("A - DLSR - LSR: {} ({:.2} ms)\n", rtt, rtt_ms);
-                    }
-
-                    let jitter = match packet_type {
-                        super::PacketType::Audio => report.jitter as f64 / 48_000.0,
-                        super::PacketType::Video => report.jitter as f64 / 90_000.0,
-                    };
-
                     if let Err(e) = stats_send.try_send(Stats {
                         packet_type,
-                        rtt: rtt_ms,
-                        fraction_lost,
-                        jitter,
+                        report,
+                        arrival_ntp_middle_32,
                     }) {
                         eprintln!("Couldn't write stat, Reason: {}", e)
                     };
