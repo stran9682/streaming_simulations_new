@@ -9,7 +9,7 @@ pub struct Peer {
     pub ssrc: u32,
 
     ///  variance in arrival time
-    pub jitter: u32,
+    pub jitter: f64,
 
     /// highest sequence number currently received from this peer         
     pub max_sequence_number: u16,
@@ -51,7 +51,7 @@ impl Peer {
     pub fn new(ssrc: u32) -> Self {
         Self {
             ssrc,
-            jitter: 0,
+            jitter: 0.0,
             delay_since_last_sr: None,
             last_sr_timestamp: None,
             packets_received: 0,
@@ -103,11 +103,7 @@ impl Peer {
         if let Some(&prev_diff) = self.window.front() {
             let d = difference.wrapping_sub(prev_diff) as i32;
             let d_abs = d.unsigned_abs();
-            if d_abs > self.jitter {
-                self.jitter += (d_abs - self.jitter) / 16;
-            } else {
-                self.jitter -= (self.jitter - d_abs) / 16;
-            }
+            self.jitter += (1.0 / 16.0) * (d_abs as f64 - self.jitter);
         }
 
         self.window.push_front(difference);
@@ -167,7 +163,7 @@ impl Peer {
             fraction_lost,
             total_lost,
             extended_sequence_number: self.max_extended_sequence_num(),
-            jitter: self.jitter,
+            jitter: self.jitter as u32,
             last_sr_timestamp: self.last_sr_timestamp.unwrap_or(0),
             delay_since_last_sr: match self.delay_since_last_sr {
                 None => 0,

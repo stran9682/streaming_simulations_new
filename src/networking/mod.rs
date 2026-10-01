@@ -74,7 +74,7 @@ pub async fn write_stats(mut rx: mpsc::Receiver<Stats>, ssrc: u32) -> anyhow::Re
             .write(
                 &format!(
                     "{},{},{},{}\n",
-                    rtt, jitter, report.total_lost, fraction_lost
+                    rtt_ms, jitter, report.total_lost, fraction_lost
                 )
                 .into_bytes(),
             )
