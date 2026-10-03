@@ -121,17 +121,17 @@ pub async fn send(
             }
         };
 
-        if let Err(e) = connection.send_many_datagrams(&packets) {
-            eprintln!("Send datagram error: {}", e);
-            break 'receiver;
-        }
-
-        // for packet in packets {
-        //     if let Err(e) = connection.send_datagram_wait(packet).await {
-        //         eprintln!("Send datagram error: {}", e);
-        //         break 'receiver;
-        //     }
+        // if let Err(e) = connection.send_many_datagrams(&packets) {
+        //     eprintln!("Send datagram error: {}", e);
+        //     break 'receiver;
         // }
+
+        for packet in packets {
+            if let Err(e) = connection.send_datagram_wait(packet).await {
+                eprintln!("Send datagram error: {}", e);
+                break 'receiver;
+            }
+        }
     }
 }
 
