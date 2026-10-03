@@ -11,8 +11,8 @@ use crate::networking::{
     senders::{send, send_rtcp},
 };
 use iroh::{
-    Endpoint, EndpointId,
-    endpoint::Connection,
+    Endpoint, EndpointAddr, EndpointId,
+    endpoint::{BeforeConnectOutcome, Connection, EndpointHooks},
     protocol::{AcceptError, ProtocolHandler},
 };
 use serde::{Deserialize, Serialize};
@@ -142,6 +142,39 @@ impl Iroh {
                 _ = v_rtcp => ()
             }
         });
+    }
+}
+
+#[derive(Debug)]
+pub struct ConnectionTracker {
+    active_connections: Mutex<Vec<EndpointAddr>>,
+}
+
+impl ConnectionTracker {
+    pub fn new() -> Self {
+        Self {
+            active_connections: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl EndpointHooks for ConnectionTracker {
+    async fn before_connect<'a>(
+        &'a self,
+        remote_addr: &'a iroh::EndpointAddr,
+        _alpn: &'a [u8],
+    ) -> iroh::endpoint::BeforeConnectOutcome {
+        let Ok(mut active_connections) = self.active_connections.lock() else {
+            return BeforeConnectOutcome::Reject;
+        };
+
+        if active_connections.contains(remote_addr) {
+            return BeforeConnectOutcome::Reject;
+        }
+
+        active_connections.push(remote_addr.clone());
+
+        BeforeConnectOutcome::Accept
     }
 }
 
