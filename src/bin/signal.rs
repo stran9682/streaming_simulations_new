@@ -34,6 +34,7 @@ async fn main() -> anyhow::Result<()> {
                 if peers.contains(&pk) {
                     continue;
                 } else {
+                    println!("Peer {} has joined", pk);
                     peers.insert(pk);
                 }
             }
