@@ -11,10 +11,11 @@ use crate::networking::{
     senders::{send, send_rtcp},
 };
 use iroh::{
-    Endpoint, EndpointAddr, EndpointId,
-    endpoint::{BeforeConnectOutcome, Connection, EndpointHooks},
+    Endpoint, EndpointId,
+    endpoint::{AfterHandshakeOutcome, BeforeConnectOutcome, Connection, EndpointHooks},
     protocol::{AcceptError, ProtocolHandler},
 };
+use iroh_gossip::ALPN;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::Receiver;
 
@@ -67,15 +68,9 @@ impl Iroh {
     pub async fn make_request(
         &self,
         endpoint: &Endpoint,
-        remote: EndpointId,
-        connections: &Arc<Mutex<Vec<EndpointAddr>>>,
+        remote: &EndpointId,
     ) -> anyhow::Result<()> {
-        let connection = endpoint.connect(remote, b"coal").await?;
-
-        connections
-            .lock()
-            .map_err(|_| io::Error::from(io::ErrorKind::ConnectionAborted))?
-            .push(endpoint.addr());
+        let connection = endpoint.connect(*remote, b"coal").await?;
 
         let (mut send, mut recv) = connection.open_bi().await?;
 
@@ -154,32 +149,43 @@ impl Iroh {
 
 #[derive(Debug)]
 pub struct ConnectionTracker {
-    active_connections: Arc<Mutex<Vec<EndpointAddr>>>,
+    active_connections: Mutex<Vec<EndpointId>>,
 }
 
 impl ConnectionTracker {
-    pub fn new(active_connections: Arc<Mutex<Vec<EndpointAddr>>>) -> Self {
-        Self { active_connections }
+    pub fn new() -> Self {
+        Self {
+            active_connections: Mutex::new(Vec::new()),
+        }
     }
 }
 
 impl EndpointHooks for ConnectionTracker {
-    async fn before_connect<'a>(
+    async fn after_handshake<'a>(
         &'a self,
-        remote_addr: &'a iroh::EndpointAddr,
-        _alpn: &'a [u8],
-    ) -> iroh::endpoint::BeforeConnectOutcome {
-        let Ok(mut active_connections) = self.active_connections.lock() else {
-            return BeforeConnectOutcome::Reject;
-        };
-
-        if active_connections.contains(remote_addr) {
-            return BeforeConnectOutcome::Reject;
+        conn: &'a Connection,
+    ) -> iroh::endpoint::AfterHandshakeOutcome {
+        if conn.alpn() == ALPN {
+            return AfterHandshakeOutcome::Accept;
         }
 
-        active_connections.push(remote_addr.clone());
+        let Ok(mut active_connections) = self.active_connections.lock() else {
+            return AfterHandshakeOutcome::Reject {
+                error_code: 404u32.into(),
+                reason: b"Couldn't acquire lock".into(),
+            };
+        };
 
-        BeforeConnectOutcome::Accept
+        if active_connections.contains(&conn.remote_id()) {
+            return AfterHandshakeOutcome::Reject {
+                error_code: 403u32.into(),
+                reason: b"Already have an active connection with peer".into(),
+            };
+        }
+
+        active_connections.push(conn.remote_id());
+
+        AfterHandshakeOutcome::Accept
     }
 }
 
