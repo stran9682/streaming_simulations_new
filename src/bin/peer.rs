@@ -1,6 +1,11 @@
-use std::{env, str::FromStr, sync::Arc, time::Instant};
+use std::{
+    env,
+    str::FromStr,
+    sync::{Arc, Mutex},
+    time::Instant,
+};
 
-use iroh::{Endpoint, PublicKey, endpoint::presets, protocol::Router};
+use iroh::{Endpoint, EndpointAddr, PublicKey, endpoint::presets, protocol::Router};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId, api::Event};
 use streaming_simulations_new::{
     networking::{
@@ -13,8 +18,10 @@ use tokio_stream::StreamExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let connections = Arc::new(Mutex::new(Vec::<EndpointAddr>::new()));
+
     let endpoint = Endpoint::builder(presets::N0)
-        .hooks(ConnectionTracker::new())
+        .hooks(ConnectionTracker::new(connections.clone()))
         .bind()
         .await?;
 
@@ -59,7 +66,7 @@ async fn main() -> anyhow::Result<()> {
             Event::Received(message) => {
                 let pk = PublicKey::from_str(str::from_utf8(&message.content)?)?;
 
-                if let Err(e) = iroh.make_request(&endpoint, pk).await {
+                if let Err(e) = iroh.make_request(&endpoint, pk, &connections).await {
                     eprintln!("Failed to connect: {}", e);
                 }
             }

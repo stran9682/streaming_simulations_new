@@ -68,8 +68,15 @@ impl Iroh {
         &self,
         endpoint: &Endpoint,
         remote: EndpointId,
+        connections: &Arc<Mutex<Vec<EndpointAddr>>>,
     ) -> anyhow::Result<()> {
         let connection = endpoint.connect(remote, b"coal").await?;
+
+        connections
+            .lock()
+            .map_err(|_| io::Error::from(io::ErrorKind::ConnectionAborted))?
+            .push(endpoint.addr());
+
         let (mut send, mut recv) = connection.open_bi().await?;
 
         let session_info_bytes = serde_json::to_vec(&self.session_info)?;
@@ -147,14 +154,12 @@ impl Iroh {
 
 #[derive(Debug)]
 pub struct ConnectionTracker {
-    active_connections: Mutex<Vec<EndpointAddr>>,
+    active_connections: Arc<Mutex<Vec<EndpointAddr>>>,
 }
 
 impl ConnectionTracker {
-    pub fn new() -> Self {
-        Self {
-            active_connections: Mutex::new(Vec::new()),
-        }
+    pub fn new(active_connections: Arc<Mutex<Vec<EndpointAddr>>>) -> Self {
+        Self { active_connections }
     }
 }
 
