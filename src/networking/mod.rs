@@ -41,10 +41,10 @@ pub async fn write_stats(mut rx: mpsc::Receiver<Stats>, ssrc: u32) -> anyhow::Re
     let mut video_stats_writer = BufWriter::with_capacity(256, video_stats);
 
     audio_stats_writer
-        .write(b"rtt,jitter,total lost,fraction lost\n")
+        .write_all(b"DelayMS,FractionLost,Jitter,TotalLost\n")
         .await?;
     video_stats_writer
-        .write(b"rtt,jitter,total lost,fraction lost\n")
+        .write_all(b"DelayMS,FractionLost,Jitter,TotalLost\n")
         .await?;
 
     while let Some(stats) = rx.recv().await {
@@ -71,10 +71,10 @@ pub async fn write_stats(mut rx: mpsc::Receiver<Stats>, ssrc: u32) -> anyhow::Re
         };
 
         writer
-            .write(
+            .write_all(
                 &format!(
                     "{},{},{},{}\n",
-                    rtt_ms, jitter, report.total_lost, fraction_lost
+                    rtt_ms, fraction_lost, jitter, report.total_lost
                 )
                 .into_bytes(),
             )
