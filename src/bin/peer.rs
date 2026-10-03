@@ -5,7 +5,7 @@ use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId, api::Event};
 use streaming_simulations_new::{
     networking::{
         PacketData,
-        iroh::{ConnectionTracker, Iroh, SessionInfo},
+        iroh::{Iroh, SessionInfo},
     },
     packet_generators::generate_packets,
 };
@@ -13,10 +13,7 @@ use tokio_stream::StreamExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let endpoint = Endpoint::builder(presets::N0)
-        .hooks(ConnectionTracker::new())
-        .bind()
-        .await?;
+    let endpoint = Endpoint::builder(presets::N0).bind().await?;
 
     endpoint.online().await;
 
