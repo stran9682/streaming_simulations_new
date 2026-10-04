@@ -1,11 +1,18 @@
-use std::{collections::HashSet, env, str::FromStr, sync::Arc, time::Instant};
+use std::{
+    collections::HashSet,
+    env,
+    str::FromStr,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use iroh::{Endpoint, PublicKey, endpoint::presets, protocol::Router};
 use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId, api::Event};
+use rand::RngExt;
 use streaming_simulations_new::{
     networking::{
         PacketData,
-        iroh::{Iroh, SessionInfo},
+        iroh::{ConnectionTracker, Iroh, SessionInfo},
     },
     packet_generators::generate_packets,
 };
@@ -13,11 +20,16 @@ use tokio_stream::StreamExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    let endpoint = Endpoint::builder(presets::N0).bind().await?;
+    let endpoint = Endpoint::builder(presets::N0)
+        .hooks(ConnectionTracker::new())
+        .bind()
+        .await?;
 
     endpoint.online().await;
 
     println!("endpoint: {}", endpoint.id());
+
+    tokio::time::sleep(Duration::from_secs(rand::rng().random_range(1..20))).await;
 
     let clock = Instant::now();
     let session_info = SessionInfo {

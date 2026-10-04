@@ -1,5 +1,4 @@
 use std::{
-    collections::HashSet,
     io::{self},
     sync::{Arc, Mutex},
     time::Instant,
@@ -13,9 +12,10 @@ use crate::networking::{
 };
 use iroh::{
     Endpoint, EndpointId,
-    endpoint::Connection,
+    endpoint::{AfterHandshakeOutcome, Connection, EndpointHooks},
     protocol::{AcceptError, ProtocolHandler},
 };
+use iroh_gossip::ALPN;
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast::Receiver;
 
@@ -24,19 +24,10 @@ pub struct Iroh {
     bytes_receiver: Receiver<PacketData>,
     clock: Instant,
     session_info: SessionInfo,
-    active_peers: Arc<Mutex<HashSet<EndpointId>>>,
 }
 
 impl ProtocolHandler for Iroh {
     async fn accept(&self, connection: Connection) -> Result<(), iroh::protocol::AcceptError> {
-        let remote = connection.remote_id();
-        if !self.active_peers.lock().unwrap().insert(remote) {
-            return Err(AcceptError::from_err(io::Error::new(
-                io::ErrorKind::AlreadyExists,
-                "Already streaming with this peer",
-            )));
-        }
-
         let (mut send, mut recv) = connection.accept_bi().await?;
 
         let bytes = recv
@@ -71,7 +62,6 @@ impl Iroh {
             bytes_receiver,
             clock,
             session_info,
-            active_peers: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -80,17 +70,7 @@ impl Iroh {
         endpoint: &Endpoint,
         remote: &EndpointId,
     ) -> anyhow::Result<()> {
-        if !self.active_peers.lock().unwrap().insert(*remote) {
-            return Ok(());
-        }
-
-        let connection = match endpoint.connect(*remote, b"coal").await {
-            Ok(c) => c,
-            Err(e) => {
-                self.active_peers.lock().unwrap().remove(remote);
-                return Err(e.into());
-            }
-        };
+        let connection = endpoint.connect(*remote, b"coal").await?;
 
         let (mut send, mut recv) = connection.open_bi().await?;
 
@@ -108,8 +88,6 @@ impl Iroh {
     }
 
     fn send_rtp(&self, connection: Connection, peer_session_info: SessionInfo) {
-        let remote_id = connection.remote_id();
-
         let audio: Arc<RTPSession> = Arc::new(RTPSession::new(
             self.session_info.audio_ssrc,
             OPUS_CLOCK_RATE,
@@ -158,7 +136,6 @@ impl Iroh {
             send_rtcp(video, connection, video_peer).await;
         });
 
-        let active_peers = self.active_peers.clone();
         tokio::spawn(async move {
             tokio::select! {
                 _ = recv => (),
@@ -166,8 +143,49 @@ impl Iroh {
                 _ = a_rtcp => (),
                 _ = v_rtcp => ()
             }
-            active_peers.lock().unwrap().remove(&remote_id);
         });
+    }
+}
+
+#[derive(Debug)]
+pub struct ConnectionTracker {
+    active_connections: Mutex<Vec<EndpointId>>,
+}
+
+impl ConnectionTracker {
+    pub fn new() -> Self {
+        Self {
+            active_connections: Mutex::new(Vec::new()),
+        }
+    }
+}
+
+impl EndpointHooks for ConnectionTracker {
+    async fn after_handshake<'a>(
+        &'a self,
+        conn: &'a Connection,
+    ) -> iroh::endpoint::AfterHandshakeOutcome {
+        if conn.alpn() == ALPN {
+            return AfterHandshakeOutcome::Accept;
+        }
+
+        let Ok(mut active_connections) = self.active_connections.lock() else {
+            return AfterHandshakeOutcome::Reject {
+                error_code: 404u32.into(),
+                reason: b"Couldn't acquire lock".into(),
+            };
+        };
+
+        if active_connections.contains(&conn.remote_id()) {
+            return AfterHandshakeOutcome::Reject {
+                error_code: 403u32.into(),
+                reason: b"Already have an active connection with peer".into(),
+            };
+        }
+
+        active_connections.push(conn.remote_id());
+
+        AfterHandshakeOutcome::Accept
     }
 }
 
