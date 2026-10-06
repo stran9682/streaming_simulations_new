@@ -1,8 +1,10 @@
-use std::{collections::HashSet, str::FromStr};
+use std::{collections::HashSet, io, sync::Mutex};
 
-use iroh::{Endpoint, PublicKey, endpoint::presets, protocol::Router};
-use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId, api::Event};
-use tokio_stream::StreamExt;
+use iroh::{
+    Endpoint, EndpointId,
+    endpoint::presets,
+    protocol::{AcceptError, ProtocolHandler, Router},
+};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -11,36 +13,61 @@ async fn main() -> anyhow::Result<()> {
 
     println!("endpoint: {}", endpoint.id());
 
-    let gossip = Gossip::builder().spawn(endpoint.clone());
+    let addresses = Addresses::new();
 
     let _router = Router::builder(endpoint.clone())
-        .accept(GOSSIP_ALPN, gossip.clone())
+        .accept(b"discovery", addresses)
         .spawn();
 
-    let mut topic_bytes = [0u8; 32];
-    topic_bytes[..4].copy_from_slice(b"coal");
-    let topic_id = TopicId::from_bytes(topic_bytes);
-
-    let (send, mut recv) = gossip.subscribe(topic_id, vec![]).await?.split();
-
-    send.broadcast(endpoint.id().to_string().into()).await?;
-
-    let mut peers = HashSet::<PublicKey>::new();
-    while let Some(event) = recv.next().await {
-        match event? {
-            Event::Received(message) => {
-                let pk = PublicKey::from_str(str::from_utf8(&message.content)?)?;
-
-                if peers.contains(&pk) {
-                    continue;
-                } else {
-                    println!("Peer {} has joined", pk);
-                    peers.insert(pk);
-                }
-            }
-            _ => {}
-        }
-    }
+    tokio::signal::ctrl_c().await?;
 
     Ok(())
+}
+
+#[derive(Debug)]
+struct Addresses {
+    endpoints: Mutex<HashSet<EndpointId>>,
+}
+
+impl ProtocolHandler for Addresses {
+    async fn accept(
+        &self,
+        connection: iroh::endpoint::Connection,
+    ) -> Result<(), iroh::protocol::AcceptError> {
+        while let Ok((mut send, mut recv)) = connection.accept_bi().await {
+            let mut buf = [0u8; 32];
+            recv.read_exact(&mut buf)
+                .await
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+
+            let peer_endpoint = EndpointId::from_bytes(&buf)
+                .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
+
+            let endpoints_bytes = {
+                let mut endpoints = self
+                    .endpoints
+                    .lock()
+                    .map_err(|_| AcceptError::from_err(io::Error::from(io::ErrorKind::Other)))?;
+                let endpoints_copy = endpoints.clone();
+                endpoints.insert(peer_endpoint);
+
+                serde_json::to_vec(&endpoints_copy).map_err(AcceptError::from_err)?
+            };
+
+            send.write_all(&endpoints_bytes)
+                .await
+                .map_err(AcceptError::from_err)?;
+            send.finish()?;
+        }
+
+        Ok(())
+    }
+}
+
+impl Addresses {
+    pub fn new() -> Self {
+        Self {
+            endpoints: Mutex::new(HashSet::new()),
+        }
+    }
 }

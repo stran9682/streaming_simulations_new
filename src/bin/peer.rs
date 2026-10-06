@@ -6,8 +6,7 @@ use std::{
     time::{Duration, Instant},
 };
 
-use iroh::{Endpoint, PublicKey, endpoint::presets, protocol::Router};
-use iroh_gossip::{ALPN as GOSSIP_ALPN, Gossip, TopicId, api::Event};
+use iroh::{Endpoint, EndpointId, PublicKey, endpoint::presets, protocol::Router};
 use rand::RngExt;
 use streaming_simulations_new::{
     networking::{
@@ -16,7 +15,6 @@ use streaming_simulations_new::{
     },
     packet_generators::generate_packets,
 };
-use tokio_stream::StreamExt;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -42,46 +40,32 @@ async fn main() -> anyhow::Result<()> {
     let iroh = Arc::new(Iroh::new(receiver, clock, session_info));
     generate_packets(clock, sender);
 
-    let gossip = Gossip::builder().spawn(endpoint.clone());
-
     let _router = Router::builder(endpoint.clone())
-        .accept(GOSSIP_ALPN, gossip.clone())
         .accept(b"coal", Arc::clone(&iroh))
         .spawn();
 
-    let mut topic_bytes = [0u8; 32];
-    topic_bytes[..4].copy_from_slice(b"coal");
-    let topic_id = TopicId::from_bytes(topic_bytes);
-
     let args: Vec<String> = env::args().collect();
-    let (send, mut recv) = if args.len() > 1 {
-        let peers = vec![PublicKey::from_str(&args[1])?];
-        gossip.subscribe_and_join(topic_id, peers).await?.split()
-    } else {
-        gossip.subscribe(topic_id, vec![]).await?.split()
-    };
+    if args.len() > 1 {
+        let signaling_addr = PublicKey::from_str(&args[1])?;
 
-    send.broadcast(endpoint.id().to_string().into()).await?;
+        let conn = endpoint.connect(signaling_addr, b"discovery").await?;
 
-    let mut connections = HashSet::<PublicKey>::new();
-    while let Some(event) = recv.next().await {
-        match event? {
-            Event::Received(message) => {
-                let pk = PublicKey::from_str(str::from_utf8(&message.content)?)?;
-                if connections.contains(&pk) {
-                    continue;
-                }
+        let (mut send, mut recv) = conn.open_bi().await?;
 
-                if let Err(e) = {
-                    connections.insert(pk);
-                    iroh.make_request(&endpoint, &pk).await
-                } {
-                    eprintln!("Failed to connect: {}", e);
-                }
-            }
-            _ => {}
+        send.write_all(endpoint.id().as_bytes()).await?;
+
+        let bytes = recv.read_to_end(usize::MAX).await?;
+
+        let remote_endpoints: HashSet<EndpointId> = serde_json::from_slice(&bytes)?;
+
+        for remote_endpoint in remote_endpoints {
+            if let Err(e) = iroh.make_request(&endpoint, &remote_endpoint).await {
+                eprintln!("Couldn't connect to {}, {}", remote_endpoint, e);
+            };
         }
     }
+
+    tokio::signal::ctrl_c().await?;
 
     Ok(())
 }
