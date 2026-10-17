@@ -1,26 +1,29 @@
-use std::time::{Duration, Instant};
+use std::{
+    fs::File,
+    io::BufReader,
+    time::{Duration, Instant},
+};
 
 use anyhow::bail;
-use bytes::Bytes;
-use tokio::{fs::File, io::AsyncReadExt, sync::broadcast::Sender};
+use rtc::media::io::{h26x_reader::H26xSampleReader, ogg_reader::OggReader};
+use tokio::sync::broadcast::Sender;
 
 use crate::networking::{PacketData, PacketType};
 
 async fn generate_video_frame(tx: Sender<PacketData>, clock: Instant) -> anyhow::Result<()> {
+    let mut tick = tokio::time::interval(Duration::from_millis(41));
     loop {
-        let mut file = File::open("input.h264").await?;
-        let mut h264_data = Vec::new();
-        file.read_to_end(&mut h264_data).await?;
+        let file = File::open("input.h264")?;
+        let reader = BufReader::new(file);
 
-        let bytes = Bytes::from(h264_data);
-        let nalus = parse_annex_b_nalus(&bytes);
+        let mut video_reader = H26xSampleReader::new(reader, 1024 * 1024, false);
 
-        for nalu in nalus {
+        while let Ok(sample) = video_reader.next_sample() {
             let elapsed = ((clock.elapsed().as_nanos() * 90_000) / 1_000_000_000) as u32;
 
             let packet_data = PacketData {
                 packet_type: PacketType::Video,
-                data: nalu,
+                data: sample.data,
                 timestamp: elapsed,
             };
 
@@ -28,60 +31,27 @@ async fn generate_video_frame(tx: Sender<PacketData>, clock: Instant) -> anyhow:
                 bail!("Error occured {}", e)
             };
 
-            tokio::time::sleep(Duration::from_secs_f32(1.0 / 30.0)).await;
+            if sample.timed {
+                tick.tick().await;
+            }
         }
     }
-}
-
-pub fn parse_annex_b_nalus(data: &Bytes) -> Vec<Bytes> {
-    let mut nalus = Vec::new();
-    let mut start_indices = Vec::new();
-    let len = data.len();
-
-    let mut i = 0;
-    while i + 2 < len {
-        if data[i] == 0 && data[i + 1] == 0 && data[i + 2] == 1 {
-            start_indices.push(i);
-            i += 3;
-        } else {
-            i += 1;
-        }
-    }
-
-    for (idx, &sc_pos) in start_indices.iter().enumerate() {
-        let nalu_start = sc_pos + 3;
-        let mut nalu_end = if idx + 1 < start_indices.len() {
-            start_indices[idx + 1]
-        } else {
-            len
-        };
-
-        while nalu_end > nalu_start && data[nalu_end - 1] == 0 {
-            nalu_end -= 1;
-        }
-
-        if nalu_end > nalu_start {
-            nalus.push(data.slice(nalu_start..nalu_end));
-        }
-    }
-
-    nalus
 }
 
 async fn generate_audio_sample(tx: Sender<PacketData>, clock: Instant) -> anyhow::Result<()> {
+    let mut tick = tokio::time::interval(Duration::from_millis(20));
     loop {
-        let mut file = File::open("input.ogg").await?;
-        let mut opus_data = Vec::new();
-        file.read_to_end(&mut opus_data).await?;
+        let file = File::open("input.ogg")?;
+        let reader = BufReader::new(file);
 
-        let packets = parse_ogg_opus_packets(&opus_data)?;
+        let (mut audio_reader, _) = OggReader::new(reader, true).expect("Cannot read OGG file");
 
-        for packet in packets {
+        while let Ok((page_data, _)) = audio_reader.parse_next_page() {
             let elapsed = ((clock.elapsed().as_nanos() * 48_000) / 1_000_000_000) as u32;
 
             let packet_data = PacketData {
                 packet_type: PacketType::Audio,
-                data: Bytes::copy_from_slice(&packet),
+                data: page_data.freeze(),
                 timestamp: elapsed,
             };
 
@@ -89,49 +59,9 @@ async fn generate_audio_sample(tx: Sender<PacketData>, clock: Instant) -> anyhow
                 bail!("Error occured {}", e)
             };
 
-            tokio::time::sleep(Duration::from_millis(20)).await;
+            tick.tick().await;
         }
     }
-}
-
-fn parse_ogg_opus_packets(file: &[u8]) -> anyhow::Result<Vec<Vec<u8>>> {
-    let mut offset = 0;
-    let mut packets = Vec::new();
-
-    while offset + 27 < file.len() {
-        if &file[offset..offset + 4] != b"OggS" {
-            break;
-        }
-
-        let page_segments = file[offset + 26] as usize;
-        let segment_table_start = offset + 27;
-        let segment_table_end = segment_table_start + page_segments;
-
-        if segment_table_end > file.len() {
-            break;
-        }
-
-        let mut packet_start = segment_table_end;
-        for segment_size in &file[segment_table_start..segment_table_end] {
-            let size = *segment_size as usize;
-            let packet_end = packet_start + size;
-
-            if packet_end > file.len() {
-                break;
-            }
-
-            let packet = &file[packet_start..packet_end];
-            if !packet.starts_with(b"OpusHead") && !packet.starts_with(b"OpusTags") {
-                packets.push(packet.to_vec());
-            }
-
-            packet_start = packet_end;
-        }
-
-        offset = packet_start;
-    }
-
-    Ok(packets)
 }
 
 pub fn generate_packets(clock: Instant, sender: Sender<PacketData>) {
