@@ -60,6 +60,8 @@ impl ProtocolHandler for Addresses {
             send.finish()?;
         }
 
+        println!("Endpoint: {}, has joined", connection.remote_id());
+
         Ok(())
     }
 }
