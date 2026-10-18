@@ -27,8 +27,6 @@ async fn main() -> anyhow::Result<()> {
 
     println!("endpoint: {}", endpoint.id());
 
-    tokio::time::sleep(Duration::from_secs(rand::rng().random_range(1..5))).await;
-
     let clock = Instant::now();
     let session_info = SessionInfo {
         video_ssrc: rand::random(),
