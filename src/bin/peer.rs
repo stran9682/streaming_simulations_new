@@ -1,13 +1,10 @@
-use std::{
-    collections::HashSet,
-    env,
-    str::FromStr,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::HashSet, env, str::FromStr, sync::Arc, time::Instant};
 
-use iroh::{Endpoint, EndpointId, PublicKey, endpoint::presets, protocol::Router};
-use rand::RngExt;
+use iroh::{
+    Endpoint, EndpointId, PublicKey,
+    endpoint::{QuicTransportConfig, presets},
+    protocol::Router,
+};
 use streaming_simulations_new::{
     networking::{
         PacketData,
@@ -18,7 +15,14 @@ use streaming_simulations_new::{
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let mut transport_config = QuicTransportConfig::builder();
+    transport_config = transport_config.datagram_receive_buffer_size(Some(2 * 1024 * 1024));
+    transport_config = transport_config.datagram_send_buffer_size(2 * 1024 * 1024);
+    transport_config = transport_config.enable_segmentation_offload(true);
+    let transport_config = transport_config.build();
+
     let endpoint = Endpoint::builder(presets::N0)
+        .transport_config(transport_config)
         .hooks(ConnectionTracker::new())
         .bind()
         .await?;
@@ -33,9 +37,9 @@ async fn main() -> anyhow::Result<()> {
         audio_ssrc: rand::random(),
     };
 
-    let (sender, receiver) = tokio::sync::broadcast::channel::<PacketData>(500);
+    let (sender, _) = tokio::sync::broadcast::channel::<PacketData>(2048);
 
-    let iroh = Arc::new(Iroh::new(receiver, clock, session_info));
+    let iroh = Arc::new(Iroh::new(sender.clone(), clock, session_info));
     generate_packets(clock, sender);
 
     let _router = Router::builder(endpoint.clone())

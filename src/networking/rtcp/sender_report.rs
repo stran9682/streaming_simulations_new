@@ -16,6 +16,19 @@ pub struct SenderReport {
 }
 
 impl SenderReport {
+    #[inline]
+    pub fn serialize_into(&self, buf: &mut BytesMut) {
+        buf.put_u32(self.ssrc);
+        buf.put_u64(self.ntp_time);
+        buf.put_u32(self.rtp_time);
+        buf.put_u32(self.packet_count);
+        buf.put_u32(self.octet_count);
+
+        for report in &self.reports {
+            report.serialize_into(buf);
+        }
+    }
+
     pub fn serialize(&self) -> BytesMut {
         /*
          *         0                   1                   2                   3
@@ -50,17 +63,8 @@ impl SenderReport {
          *        |                  profile-specific extensions                  |
          *        +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
          */
-        let mut buf = BytesMut::new();
-
-        buf.put_u32(self.ssrc);
-        buf.put_u64(self.ntp_time);
-        buf.put_u32(self.rtp_time);
-        buf.put_u32(self.packet_count);
-        buf.put_u32(self.octet_count);
-
-        for report in &self.reports {
-            buf.put(report.serialize());
-        }
+        let mut buf = BytesMut::with_capacity(24 + self.reports.len() * 24);
+        self.serialize_into(&mut buf);
         buf
     }
 

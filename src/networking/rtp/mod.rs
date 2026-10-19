@@ -21,6 +21,7 @@ pub struct RTPHeader {
 }
 
 impl RTPHeader {
+    #[inline]
     pub fn serialize(&self, buf: &mut BytesMut) {
         //let mut buf = BytesMut::with_capacity(1500);
 
@@ -54,6 +55,7 @@ impl RTPHeader {
         // }
     }
 
+    #[inline]
     pub fn deserialize<B: Buf>(packet: &mut B) -> RTPHeader {
         let b0 = packet.get_u8();
         let version = b0 >> 6 & 0x3;

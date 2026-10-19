@@ -1,14 +1,12 @@
-use std::{collections::VecDeque, time::Instant};
+use std::time::Instant;
 
-use crate::networking::{rtcp::ReceptionReport, rtp::RTPHeader};
-
-static WINDOW_SIZE: usize = 50;
+use crate::networking::rtcp::ReceptionReport;
 
 #[derive(Debug)]
 pub struct Peer {
     pub ssrc: u32,
 
-    ///  variance in arrival time
+    /// variance in arrival time
     pub jitter: f64,
 
     /// highest sequence number currently received from this peer         
@@ -24,11 +22,8 @@ pub struct Peer {
     /// number of times the sequence number has rolled over from max u16 value          
     pub wrap_around_count: u32,
 
-    /// Stores the arrival time of the WINDOW_SIZE most recent packets
-    pub window: VecDeque<u32>,
-
-    /// packet in window with the earliest arrival time
-    pub min_window: u32,
+    /// Transit difference of the previous packet for RFC 3550 jitter calculation
+    pub prev_difference: Option<u32>,
 
     /// middle 32 bytes of the NTP timestamp as received of the last SR from this peer
     pub last_sr_timestamp: Option<u32>,
@@ -41,10 +36,6 @@ pub struct Peer {
 
     /// the received number of packets when the last SR was sent
     pub received_prior: u32,
-    // skew_calculator: PeerDelay,
-
-    // buffer where frames with the same timestamp are grouped together
-    // playout_buffer: Vec<PlayoutBufferNode>,
 }
 
 impl Peer {
@@ -58,21 +49,19 @@ impl Peer {
             wrap_around_count: 0,
             max_sequence_number: 0,
             initial_sequence_number: None,
-            window: VecDeque::new(),
-            min_window: u32::MAX,
-            // playout_buffer: Vec::with_capacity(100),
-            // swift_peer_model,
+            prev_difference: None,
             expected_prior: 0,
             received_prior: 0,
-            // skew_calculator: PeerDelay::new(skew_threshold),
         }
     }
 
+    #[inline]
     pub fn max_extended_sequence_num(&self) -> u32 {
         let max_sequence = self.max_sequence_number;
         max_sequence as u32 + (65536 * self.wrap_around_count)
     }
 
+    #[inline]
     pub fn expected_num_packets(&self) -> u32 {
         match self.initial_sequence_number {
             Some(initial) => {
@@ -84,6 +73,7 @@ impl Peer {
         }
     }
 
+    #[inline]
     pub fn calculate_fraction_lost(&self) -> u8 {
         let expected_interval = self.expected_num_packets() - self.expected_prior;
         let received_inteval = self.packets_received - self.received_prior;
@@ -97,46 +87,30 @@ impl Peer {
         fraction.clamp(0, 255) as u8
     }
 
-    pub fn update_reception_stats(&mut self, difference: u32, header: RTPHeader) {
+    #[inline]
+    pub fn update_reception_stats(&mut self, difference: u32, sequence_number: u16) {
         self.packets_received += 1;
 
-        if let Some(&prev_diff) = self.window.front() {
+        if let Some(prev_diff) = self.prev_difference {
             let d = difference.wrapping_sub(prev_diff) as i32;
             let d_abs = d.unsigned_abs();
             self.jitter += (1.0 / 16.0) * (d_abs as f64 - self.jitter);
         }
-
-        self.window.push_front(difference);
-
-        if self.window.len() > WINDOW_SIZE {
-            self.window.pop_back();
-        }
-
-        let min = self.window.iter().fold(self.window[0], |min, val| {
-            if val.wrapping_sub(min) & 0x80000000 != 0 {
-                *val
-            } else {
-                min
-            }
-        });
-
-        self.min_window = min;
+        self.prev_difference = Some(difference);
 
         if self.initial_sequence_number.is_none() {
-            self.initial_sequence_number = Some(header.sequence_number);
-            self.max_sequence_number = header.sequence_number;
+            self.initial_sequence_number = Some(sequence_number);
+            self.max_sequence_number = sequence_number;
         }
 
-        let delta = header
-            .sequence_number
-            .wrapping_sub(self.max_sequence_number);
+        let delta = sequence_number.wrapping_sub(self.max_sequence_number);
 
         if delta < 3000 {
             // accounting for wraparound
-            if header.sequence_number < self.max_sequence_number {
+            if sequence_number < self.max_sequence_number {
                 self.wrap_around_count += 1;
             }
-            self.max_sequence_number = header.sequence_number;
+            self.max_sequence_number = sequence_number;
         } else if delta <= 65535 - 100 {
             // sequence number made a large jump
         } else {
@@ -144,6 +118,7 @@ impl Peer {
         }
     }
 
+    #[inline]
     pub fn update_last_sr_timestamp(&mut self, last_sr_timestamp: u32) {
         self.last_sr_timestamp = Some(last_sr_timestamp);
         self.delay_since_last_sr = Some(Instant::now());
@@ -169,7 +144,7 @@ impl Peer {
                 None => 0,
                 Some(time) => {
                     let elapsed = time.elapsed();
-                    ((elapsed.as_nanos() * 65536) / 1_000_000_000) as u32
+                    ((elapsed.as_micros() as u64 * 65536) / 1_000_000) as u32
                 }
             },
         }

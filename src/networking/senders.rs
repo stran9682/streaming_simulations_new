@@ -24,26 +24,49 @@ pub async fn send(
     mut bytes_receiver: Receiver<PacketData>,
 ) {
     let payload_size = 1100;
+    const CHUNK_SIZE: usize = 64 * 1024;
+    let mut buf = BytesMut::with_capacity(CHUNK_SIZE);
+    let mut payloads: Vec<Bytes> = Vec::with_capacity(64);
 
-    let mut buf = BytesMut::with_capacity(payload_size);
+    'receiver: loop {
+        let packet_data = match bytes_receiver.recv().await {
+            Ok(data) => data,
+            Err(tokio::sync::broadcast::error::RecvError::Lagged(skipped)) => {
+                if cfg!(debug_assertions) {
+                    eprintln!("Sender lagged by {} packets", skipped);
+                }
+                continue;
+            }
+            Err(tokio::sync::broadcast::error::RecvError::Closed) => {
+                break 'receiver;
+            }
+        };
 
-    'receiver: while let Ok(packet_data) = bytes_receiver.recv().await {
-        let packets = match packet_data.packet_type {
+        match packet_data.packet_type {
             Audio => {
                 let header =
                     audio.get_packet(false, packet_data.timestamp, packet_data.data.len() as u32);
 
+                let required_len = 12 + packet_data.data.len();
+                if buf.capacity() < required_len {
+                    buf.reserve(CHUNK_SIZE.max(required_len));
+                }
+
                 header.serialize(&mut buf);
-
                 buf.extend_from_slice(&packet_data.data);
-
                 let packet = buf.split().freeze();
 
-                vec![packet]
+                if let Err(e) = connection.send_datagram(packet) {
+                    eprintln!("Send datagram error: {}", e);
+                    break 'receiver;
+                }
             }
             Video => {
-                let mut payloads: Vec<Bytes> = Vec::new();
+                payloads.clear();
                 let bytes = &packet_data.data;
+                if bytes.is_empty() {
+                    continue;
+                }
 
                 let mut nalu_data_index = 1;
                 let nalu_data_length = bytes.len() - nalu_data_index;
@@ -55,13 +78,25 @@ pub async fn send(
                 if bytes.len() <= payload_size {
                     let header = video.get_packet(true, packet_data.timestamp, bytes.len() as u32);
 
-                    header.serialize(&mut buf);
-                    buf.extend_from_slice(&packet_data.data);
+                    let required_len = 12 + bytes.len();
+                    if buf.capacity() < required_len {
+                        buf.reserve(CHUNK_SIZE.max(required_len));
+                    }
 
+                    header.serialize(&mut buf);
+                    buf.extend_from_slice(bytes);
                     let packet = buf.split().freeze();
 
-                    payloads.push(packet);
+                    if let Err(e) = connection.send_datagram(packet) {
+                        eprintln!("Send datagram error: {}", e);
+                        break 'receiver;
+                    }
                 } else {
+                    let num_frags = (nalu_data_remaining + payload_size - 1) / payload_size;
+                    if payloads.capacity() < num_frags {
+                        payloads.reserve(num_frags - payloads.capacity());
+                    }
+
                     while nalu_data_remaining > 0 {
                         let current_fragment_size = min(payload_size, nalu_data_remaining);
 
@@ -71,25 +106,12 @@ pub async fn send(
                             current_fragment_size as u32 + 2,
                         );
 
+                        let required_len = 12 + 2 + current_fragment_size;
+                        if buf.capacity() < required_len {
+                            buf.reserve(CHUNK_SIZE.max(required_len));
+                        }
+
                         header.serialize(&mut buf);
-
-                        /*
-                            +---------------+---------------+
-                            |0|1|2|3|4|5|6|7|0|1|2|3|4|5|6|7|
-                            +-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+-+
-                            |F|NRI|  Type   |S|E|R|  Type   |
-                            +---------------+---------------+
-
-                            F           : should always be 0
-                            NRI         : Essentialy level of importance, needs to be copied
-                            Type (1)    : Type of header. 28 To indicate this is a fragment
-                            S(tart)     : indicates this is the start
-                            E(nd)       : indicates this is the end
-                            R(eserved)  : always 0
-                            Type (2)    : Kind of payload, needs to be copied
-
-                            Original header needs to be reconstructed!
-                        */
 
                         let b0 = 28 | nalu_nri; // 28 to indicate FU-A packet type
                         buf.put_u8(b0);
@@ -112,26 +134,16 @@ pub async fn send(
                         nalu_data_index += current_fragment_size;
 
                         let packet = buf.split().freeze();
-
                         payloads.push(packet);
                     }
+
+                    if let Err(e) = connection.send_many_datagrams(&payloads) {
+                        eprintln!("Send datagram error: {}", e);
+                        break 'receiver;
+                    }
                 }
-
-                payloads
             }
-        };
-
-        if let Err(e) = connection.send_many_datagrams(&packets) {
-            eprintln!("Send datagram error: {}", e);
-            break 'receiver;
         }
-
-        // for packet in packets {
-        //     if let Err(e) = connection.send_datagram_wait(packet).await {
-        //         eprintln!("Send datagram error: {}", e);
-        //         break 'receiver;
-        //     }
-        // }
     }
 }
 
@@ -141,6 +153,8 @@ pub async fn send_rtcp(
     peer: Arc<Mutex<Peer>>,
 ) {
     let mut first_packet = true;
+    let mut packet_buf = BytesMut::with_capacity(128);
+
     loop {
         let mut interval = 5.0;
 
@@ -159,7 +173,7 @@ pub async fn send_rtcp(
         let ntp = system_time_to_ntp(SystemTime::now());
         let elapsed = rtp_session.clock.elapsed();
         let rtp_time =
-            ((elapsed.as_nanos() * rtp_session.clock_rate as u128) / 1_000_000_000) as u32;
+            ((elapsed.as_micros() as u64 * rtp_session.clock_rate) / 1_000_000) as u32;
 
         let reports = peer
             .lock()
@@ -181,12 +195,16 @@ pub async fn send_rtcp(
             length: sender_report.length(),
         };
 
-        let body = sender_report.serialize();
-        let mut packet = BytesMut::with_capacity(4 + body.len());
-        packet.put(header.serialize());
-        packet.put(body);
+        packet_buf.clear();
+        let required_len = 4 + 24 + sender_report.reports.len() * 24;
+        if packet_buf.capacity() < required_len {
+            packet_buf.reserve(required_len - packet_buf.capacity());
+        }
 
-        let packet = packet.freeze();
+        header.serialize_into(&mut packet_buf);
+        sender_report.serialize_into(&mut packet_buf);
+
+        let packet = packet_buf.split().freeze();
 
         if let Err(e) = connection.send_datagram(packet) {
             eprintln!("Failed to send RTCP to {}: {}", connection.remote_id(), e);

@@ -43,16 +43,17 @@ impl ProtocolHandler for Addresses {
             let peer_endpoint = EndpointId::from_bytes(&buf)
                 .map_err(|_| io::Error::from(io::ErrorKind::InvalidData))?;
 
-            let endpoints_bytes = {
+            let endpoints_copy = {
                 let mut endpoints = self
                     .endpoints
                     .lock()
                     .map_err(|_| AcceptError::from_err(io::Error::from(io::ErrorKind::Other)))?;
-                let endpoints_copy = endpoints.clone();
+                let copy = endpoints.clone();
                 endpoints.insert(peer_endpoint);
-
-                serde_json::to_vec(&endpoints_copy).map_err(AcceptError::from_err)?
+                copy
             };
+
+            let endpoints_bytes = serde_json::to_vec(&endpoints_copy).map_err(AcceptError::from_err)?;
 
             send.write_all(&endpoints_bytes)
                 .await

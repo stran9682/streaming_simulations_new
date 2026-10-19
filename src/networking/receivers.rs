@@ -20,7 +20,7 @@ pub async fn packet_receiver(
     peer_video_ssrc: u32,
     clock: Instant,
 ) {
-    let (stats_send, stats_recv) = mpsc::channel::<Stats>(100);
+    let (stats_send, stats_recv) = mpsc::channel::<Stats>(1024);
     tokio::spawn(async move {
         if let Err(e) = write_stats(stats_recv, peer_video_ssrc).await {
             eprintln!("Error occured attempting to write to file: {}", e);
@@ -46,13 +46,8 @@ pub async fn packet_receiver(
                     (&audio_peer, super::PacketType::Audio)
                 };
 
-                match peer.lock() {
-                    Ok(mut peer) => {
-                        peer.update_last_sr_timestamp(last_sr_timestamp);
-                    }
-                    Err(e) => {
-                        eprintln!("RTCP Lock failure: {}", e);
-                    }
+                if let Ok(mut peer) = peer.lock() {
+                    peer.update_last_sr_timestamp(last_sr_timestamp);
                 }
 
                 // Determining our RTT from the RR
@@ -63,30 +58,31 @@ pub async fn packet_receiver(
                         continue;
                     }
 
-                    if let Err(e) = stats_send.try_send(Stats {
+                    let _ = stats_send.try_send(Stats {
                         packet_type,
                         report,
                         arrival_ntp_middle_32,
-                    }) {
-                        eprintln!("Couldn't write stat, Reason: {}", e)
-                    };
+                    });
                 }
             }
         } else {
+            if bytes.len() < 12 {
+                continue;
+            }
             let header = RTPHeader::deserialize(&mut bytes);
 
             let (peer_lock, clock_rate) = if header.ssrc == peer_video_ssrc {
-                (&video_peer, H264_CLOCK_RATE as u32)
+                (&video_peer, H264_CLOCK_RATE)
             } else {
-                (&audio_peer, OPUS_CLOCK_RATE as u32)
+                (&audio_peer, OPUS_CLOCK_RATE)
             };
 
-            let arrival_time =
-                ((clock.elapsed().as_nanos() * clock_rate as u128) / 1_000_000_000) as u32;
+            let elapsed_micros = clock.elapsed().as_micros() as u64;
+            let arrival_time = ((elapsed_micros * clock_rate) / 1_000_000) as u32;
             let difference = arrival_time.wrapping_sub(header.timestamp);
 
             if let Ok(mut peer) = peer_lock.lock() {
-                peer.update_reception_stats(difference, header);
+                peer.update_reception_stats(difference, header.sequence_number);
             }
         }
     }

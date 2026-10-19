@@ -15,6 +15,19 @@ pub struct ReceptionReport {
 }
 
 impl ReceptionReport {
+    #[inline]
+    pub fn serialize_into(&self, buf: &mut BytesMut) {
+        buf.put_u32(self.reportee_ssrc);
+        buf.put_u8(self.fraction_lost);
+        buf.put_u8(((self.total_lost >> 16) & 0xFF) as u8);
+        buf.put_u8(((self.total_lost >> 8) & 0xFF) as u8);
+        buf.put_u8((self.total_lost & 0xFF) as u8);
+        buf.put_u32(self.extended_sequence_number);
+        buf.put_u32(self.jitter);
+        buf.put_u32(self.last_sr_timestamp);
+        buf.put_u32(self.delay_since_last_sr);
+    }
+
     pub fn serialize(&self) -> BytesMut {
         /*
          *  0                   1                   2                   3
@@ -35,20 +48,7 @@ impl ReceptionReport {
          */
 
         let mut buf = BytesMut::with_capacity(24);
-
-        buf.put_u32(self.reportee_ssrc);
-
-        buf.put_u8(self.fraction_lost);
-
-        buf.put_u8(((self.total_lost >> 16) & 0xFF) as u8);
-        buf.put_u8(((self.total_lost >> 8) & 0xFF) as u8);
-        buf.put_u8((self.total_lost & 0xFF) as u8);
-
-        buf.put_u32(self.extended_sequence_number);
-        buf.put_u32(self.jitter);
-        buf.put_u32(self.last_sr_timestamp);
-        buf.put_u32(self.delay_since_last_sr);
-
+        self.serialize_into(&mut buf);
         buf
     }
 

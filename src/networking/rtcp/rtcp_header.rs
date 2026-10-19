@@ -17,16 +17,18 @@ pub struct RTCPHeader {
 }
 
 impl RTCPHeader {
-    pub fn serialize(&self) -> BytesMut {
-        // TODO: Adjust this number lol
-        let mut buf = BytesMut::with_capacity(4);
-
+    #[inline]
+    pub fn serialize_into(&self, buf: &mut BytesMut) {
         let b0 = (2 << 6) | ((self.padding as u8) << 5) | (self.count & 0x1f);
 
         buf.put_u8(b0);
         buf.put_u8(self.packet_type as u8);
         buf.put_u16(self.length);
+    }
 
+    pub fn serialize(&self) -> BytesMut {
+        let mut buf = BytesMut::with_capacity(4);
+        self.serialize_into(&mut buf);
         buf
     }
 

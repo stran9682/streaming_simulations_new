@@ -35,10 +35,10 @@ const H264_CLOCK_RATE: u64 = 90_000;
 
 pub async fn write_stats(mut rx: mpsc::Receiver<Stats>, ssrc: u32) -> anyhow::Result<()> {
     let audio_stats = File::create(format!("audio-stats-{ssrc}.csv")).await?;
-    let mut audio_stats_writer = BufWriter::with_capacity(256, audio_stats);
+    let mut audio_stats_writer = BufWriter::with_capacity(64 * 1024, audio_stats);
 
     let video_stats = File::create(format!("video-stats-{ssrc}.csv")).await?;
-    let mut video_stats_writer = BufWriter::with_capacity(256, video_stats);
+    let mut video_stats_writer = BufWriter::with_capacity(64 * 1024, video_stats);
 
     audio_stats_writer
         .write_all(b"DelayMS,FractionLost,Jitter,TotalLost\n")
@@ -55,9 +55,15 @@ pub async fn write_stats(mut rx: mpsc::Receiver<Stats>, ssrc: u32) -> anyhow::Re
 
         let report = stats.report;
 
-        let rtt =
-            stats.arrival_ntp_middle_32 - report.last_sr_timestamp - report.delay_since_last_sr;
-        let rtt_ms = (rtt as f64 * 1000.0) / 65536.0;
+        let rtt = (stats
+            .arrival_ntp_middle_32
+            .wrapping_sub(report.last_sr_timestamp)
+            .wrapping_sub(report.delay_since_last_sr)) as i32;
+        let rtt_ms = if rtt > 0 {
+            (rtt as f64 * 1000.0) / 65536.0
+        } else {
+            0.0
+        };
 
         let fraction_lost = report.fraction_lost as f64 / 256.0;
 
@@ -70,15 +76,11 @@ pub async fn write_stats(mut rx: mpsc::Receiver<Stats>, ssrc: u32) -> anyhow::Re
             PacketType::Video => report.jitter as f64 / 90_000.0,
         };
 
-        writer
-            .write_all(
-                &format!(
-                    "{},{},{},{}\n",
-                    rtt_ms, fraction_lost, jitter, report.total_lost
-                )
-                .into_bytes(),
-            )
-            .await?;
+        let line = format!(
+            "{:.3},{:.4},{:.6},{}\n",
+            rtt_ms, fraction_lost, jitter, report.total_lost
+        );
+        writer.write_all(line.as_bytes()).await?;
     }
 
     audio_stats_writer.flush().await?;

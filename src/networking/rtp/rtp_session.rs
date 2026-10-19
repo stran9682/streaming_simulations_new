@@ -26,6 +26,7 @@ impl RTPSession {
         }
     }
 
+    #[inline]
     pub fn get_packet(&self, marker: bool, timestamp: u32, packet_length: u32) -> super::RTPHeader {
         let current_sequence_num = self.current_sequence_num.fetch_add(1, Relaxed);
         self.packets_generated.fetch_add(1, Relaxed);
@@ -44,13 +45,13 @@ impl RTPSession {
         }
     }
 
+    #[inline]
     pub fn get_num_packets_generated(&self) -> u32 {
         self.packets_generated.load(Relaxed)
     }
 
+    #[inline]
     pub fn get_num_octets_sent(&self) -> u32 {
         self.octets_sent.load(Relaxed)
     }
-
-    pub fn get_peer_min_window(&self) {}
 }

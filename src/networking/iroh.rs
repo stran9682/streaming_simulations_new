@@ -15,13 +15,12 @@ use iroh::{
     endpoint::{AfterHandshakeOutcome, Connection, EndpointHooks},
     protocol::{AcceptError, ProtocolHandler},
 };
-use iroh_gossip::ALPN;
 use serde::{Deserialize, Serialize};
-use tokio::sync::broadcast::Receiver;
+use tokio::sync::broadcast::Sender;
 
 #[derive(Debug)]
 pub struct Iroh {
-    bytes_receiver: Receiver<PacketData>,
+    bytes_sender: Sender<PacketData>,
     clock: Instant,
     session_info: SessionInfo,
 }
@@ -54,12 +53,12 @@ impl ProtocolHandler for Iroh {
 
 impl Iroh {
     pub fn new(
-        bytes_receiver: Receiver<PacketData>,
+        bytes_sender: Sender<PacketData>,
         clock: Instant,
         session_info: SessionInfo,
     ) -> Self {
         Self {
-            bytes_receiver,
+            bytes_sender,
             clock,
             session_info,
         }
@@ -102,13 +101,13 @@ impl Iroh {
         let audio_peer = Arc::new(Mutex::new(Peer::new(peer_session_info.audio_ssrc)));
         let video_peer = Arc::new(Mutex::new(Peer::new(peer_session_info.video_ssrc)));
 
-        let rx = self.bytes_receiver.resubscribe();
+        let rx = self.bytes_sender.subscribe();
         let clock = self.clock;
 
         let send_connection = connection.clone();
         let send_audio_rtp = audio.clone();
         let send_video_rtp = video.clone();
-        let send =
+        let mut send_task =
             tokio::spawn(
                 async move { send(send_connection, send_audio_rtp, send_video_rtp, rx).await },
             );
@@ -116,7 +115,7 @@ impl Iroh {
         let recv_connection = connection.clone();
         let recv_audio_peer = audio_peer.clone();
         let recv_video_peer = video_peer.clone();
-        let recv = tokio::spawn(async move {
+        let mut recv_task = tokio::spawn(async move {
             packet_receiver(
                 recv_connection,
                 recv_audio_peer,
@@ -128,21 +127,25 @@ impl Iroh {
         });
 
         let audio_connection = connection.clone();
-        let a_rtcp = tokio::spawn(async move {
+        let mut a_rtcp_task = tokio::spawn(async move {
             send_rtcp(audio, audio_connection, audio_peer).await;
         });
 
-        let v_rtcp = tokio::spawn(async move {
+        let mut v_rtcp_task = tokio::spawn(async move {
             send_rtcp(video, connection, video_peer).await;
         });
 
         tokio::spawn(async move {
             tokio::select! {
-                _ = recv => (),
-                _ = send => (),
-                _ = a_rtcp => (),
-                _ = v_rtcp => ()
+                _ = &mut recv_task => (),
+                _ = &mut send_task => (),
+                _ = &mut a_rtcp_task => (),
+                _ = &mut v_rtcp_task => (),
             }
+            recv_task.abort();
+            send_task.abort();
+            a_rtcp_task.abort();
+            v_rtcp_task.abort();
         });
     }
 }
@@ -165,7 +168,7 @@ impl EndpointHooks for ConnectionTracker {
         &'a self,
         conn: &'a Connection,
     ) -> iroh::endpoint::AfterHandshakeOutcome {
-        if conn.alpn() == ALPN {
+        if conn.alpn() == b"discovery" {
             return AfterHandshakeOutcome::Accept;
         }
 
